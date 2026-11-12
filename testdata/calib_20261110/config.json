@@ -1,0 +1,131 @@
+{
+  "bench": {
+    "abort_volt": 3.3,
+    "min_volt": 3.5
+  },
+  "box_rim_height_m": 0.03,
+  "contact_depth_m": 0.006,
+  "floor_clearance": 0.004,
+  "floor_z": -0.027501036388128973,
+  "grasp": {
+    "min_engage": 0.006
+  },
+  "gripper": {
+    "closed_raw": 1998,
+    "margin": 25,
+    "open_raw": 3648,
+    "velocity_cap": 700
+  },
+  "gripper_touch_raw": 2050,
+  "integ_deadzone_deg": 0.12,
+  "integ_speed_gate_deg_s": 5.0,
+  "keepouts": {
+    "base_column": [
+      -0.12,
+      0.085,
+      -0.065,
+      0.065,
+      -0.05,
+      0.13
+    ],
+    "cables": [
+      0.19,
+      0.45,
+      -0.4,
+      -0.135,
+      -0.05,
+      0.03
+    ]
+  },
+  "ki_per_s": 2.0,
+  "limit_margin_ticks": 45,
+  "max_joint_speed_deg_s": 70.0,
+  "max_temp_c": 62,
+  "min_volt": 4.2,
+  "p_gain": 32,
+  "p_gain_restore": 16,
+  "sag_corr_max_deg": 7.0,
+  "servo_acceleration": 40,
+  "servo_velocity_cap": 1100,
+  "sign": {
+    "elbow_flex": 1,
+    "shoulder_lift": 1,
+    "shoulder_pan": 1,
+    "wrist_flex": 1,
+    "wrist_roll": 1
+  },
+  "soft_limits_deg": {
+    "shoulder_pan": [
+      -100,
+      100
+    ],
+    "wrist_roll": [
+      -160,
+      160
+    ]
+  },
+  "speed_tier": "slow_cruise",
+  "speed_tiers": {
+    "fast": {
+      "approach": 12.0,
+      "joint_speed_scale": {
+        "wrist_roll": 0.57
+      },
+      "precise": 8.0
+    },
+    "fast_cruise": {
+      "approach": 12.0,
+      "joint_speed_scale": {
+        "wrist_roll": 0.57
+      },
+      "precise": 8.0,
+      "servo_acceleration": 254,
+      "servo_velocity_cap": 1200,
+      "time_law": "cruise",
+      "transit": 70.0
+    },
+    "normal": {
+      "approach": 12.0,
+      "joint_speed_scale": {
+        "wrist_roll": 0.89
+      },
+      "precise": 8.0
+    },
+    "normal_cruise": {
+      "approach": 12.0,
+      "joint_speed_scale": {
+        "wrist_roll": 0.89
+      },
+      "precise": 8.0,
+      "servo_acceleration": 130,
+      "servo_velocity_cap": 770,
+      "time_law": "cruise",
+      "transit": 45.0
+    }
+  },
+  "speed_tiers_validated": [
+    "slow",
+    "slow_cruise",
+    "normal"
+  ],
+  "table_plane": [
+    -0.023501036388128973,
+    0.0,
+    0.0
+  ],
+  "table_z": -0.023501036388128973,
+  "tip_offset": [
+    -0.001,
+    0.0,
+    0.0068
+  ],
+  "track_err_abort_deg": 10.0,
+  "track_err_abort_s": 0.6,
+  "zero_ticks": {
+    "elbow_flex": 2047.0,
+    "shoulder_lift": 2047.0,
+    "shoulder_pan": 2047.0,
+    "wrist_flex": 2047.0,
+    "wrist_roll": 1944.6
+  }
+}

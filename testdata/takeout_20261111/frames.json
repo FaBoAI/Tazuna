@@ -1,0 +1,307 @@
+{
+ "source": "runs/20261111_030203 (events.jsonl + NNNN_<name>_raw.jpg); joint angles and gripper position of each frame from the event record",
+ "caution": "camera and kinematic calibration were off by 1-2 cm near the robot base on that day: use these frames for presence, kind, counts, relative positions and sizes, not for absolute coordinates",
+ "known": {
+  "box_outer_mm": [
+   113.0,
+   100.5
+  ],
+  "cap_mm": {
+   "diameter": 31.0,
+   "height": 16.5,
+   "wall": [
+    1.5,
+    2.0
+   ]
+  },
+  "ivory_cylinder_mm": {
+   "diameter": 26.0,
+   "height": 22.0
+  },
+  "blue_disc_mm": {
+   "diameter": 35.0
+  }
+ },
+ "frames": [
+  {
+   "file": "0008_scene_raw.jpg",
+   "t": null,
+   "q_deg": [
+    -4.31,
+    -94.31,
+    85.25,
+    67.59,
+    3.64
+   ],
+   "gripper_raw": 2158,
+   "tip_xyz": null,
+   "arm_state_from": "no event record (selftest 10:04, arm parked)",
+   "what": "morning: box turned by 17 deg at its usual place; the cap stands open side up in it"
+  },
+  {
+   "file": "0030_scene_raw.jpg",
+   "t": "2026-11-11 14:08:08",
+   "q_deg": [
+    -4.31,
+    -93.78,
+    84.99,
+    69.79,
+    3.29
+   ],
+   "gripper_raw": 2166,
+   "tip_xyz": null,
+   "arm_state_from": "q from the last arm record before it",
+   "what": "14:08 start of the take-out: five objects in the box, arm parked"
+  },
+  {
+   "file": "0034_hover1_raw.jpg",
+   "t": "2026-11-11 14:19:18",
+   "q_deg": [
+    -24.26,
+    -3.78,
+    13.97,
+    79.54,
+    23.85
+   ],
+   "gripper_raw": 2166,
+   "tip_xyz": [
+    0.2032,
+    0.0709,
+    0.046
+   ],
+   "arm_state_from": "q from this record",
+   "what": "gripper above the far side of the box (hides nothing of it)"
+  },
+  {
+   "file": "0040_down_raw.jpg",
+   "t": "2026-11-11 14:21:41",
+   "q_deg": [
+    -24.43,
+    6.5,
+    27.77,
+    55.55,
+    23.5
+   ],
+   "gripper_raw": 2165,
+   "tip_xyz": [
+    0.2034,
+    0.0717,
+    -0.0125
+   ],
+   "arm_state_from": "q from this record",
+   "what": "fingertips in the cap; the gripper hides the far corner; the finger back has turned the box"
+  },
+  {
+   "file": "0042_lifted_raw.jpg",
+   "t": "2026-11-11 14:22:01",
+   "q_deg": [
+    -24.26,
+    -3.16,
+    14.68,
+    78.4,
+    23.5
+   ],
+   "gripper_raw": 2067,
+   "tip_xyz": [
+    0.2034,
+    0.0711,
+    0.0427
+   ],
+   "arm_state_from": "q from this record",
+   "what": "gripper lifted (empty); box turned by 16 deg"
+  },
+  {
+   "file": "0046_hover4_raw.jpg",
+   "t": "2026-11-11 14:26:40",
+   "q_deg": [
+    -23.47,
+    -2.11,
+    28.92,
+    63.11,
+    24.56
+   ],
+   "gripper_raw": 2161,
+   "tip_xyz": [
+    0.1968,
+    0.0654,
+    0.0079
+   ],
+   "arm_state_from": "q from this record",
+   "what": "gripper low over the cap, hides the far corner (same box pose as 0042 / 0048)"
+  },
+  {
+   "file": "0048_clean2_raw.jpg",
+   "t": "2026-11-11 14:30:04",
+   "q_deg": [
+    -0.18,
+    -36.3,
+    14.24,
+    91.49,
+    0.04
+   ],
+   "gripper_raw": 2161,
+   "tip_xyz": null,
+   "arm_state_from": "q from the last arm record before it",
+   "what": "arm at the ready pose; box turned by 16 deg; cap and ivory cylinder touch in the image"
+  },
+  {
+   "file": "0056_lifted2_raw.jpg",
+   "t": "2026-11-11 14:34:33",
+   "q_deg": [
+    -30.15,
+    -8.35,
+    17.49,
+    80.51,
+    -47.43
+   ],
+   "gripper_raw": 2058,
+   "tip_xyz": [
+    0.1852,
+    0.0908,
+    0.0497
+   ],
+   "arm_state_from": "q from this record",
+   "what": "gripper above the box; the cap's base is in view"
+  },
+  {
+   "file": "0066_probe1_raw.jpg",
+   "t": "2026-11-11 14:40:37",
+   "q_deg": [
+    -29.97,
+    4.57,
+    22.32,
+    63.28,
+    52.68
+   ],
+   "gripper_raw": 2066,
+   "tip_xyz": [
+    0.202,
+    0.0876,
+    0.0042
+   ],
+   "arm_state_from": "q from this record",
+   "what": "gripper deep in the box: fewer than four sides of the rim are seen"
+  },
+  {
+   "file": "0072_h6_raw.jpg",
+   "t": "2026-11-11 14:45:00",
+   "q_deg": [
+    -32.61,
+    -0.18,
+    33.93,
+    56.51,
+    15.15
+   ],
+   "gripper_raw": 2161,
+   "tip_xyz": [
+    0.1794,
+    0.0877,
+    -0.0074
+   ],
+   "arm_state_from": "q from this record",
+   "what": "gripper stands in the box and divides its image; box turned by 33 deg"
+  },
+  {
+   "file": "0084_carry_raw.jpg",
+   "t": "2026-11-11 14:48:16",
+   "q_deg": [
+    -25.49,
+    -8.0,
+    22.76,
+    74.44,
+    22.1
+   ],
+   "gripper_raw": 2075,
+   "tip_xyz": [
+    0.1935,
+    0.0708,
+    0.0365
+   ],
+   "arm_state_from": "q from this record",
+   "what": "the cap is held above the box (taken out)"
+  },
+  {
+   "file": "0088_result_raw.jpg",
+   "t": "2026-11-11 14:49:43",
+   "q_deg": [
+    -0.35,
+    -36.12,
+    14.41,
+    91.32,
+    -0.23
+   ],
+   "gripper_raw": 2234,
+   "tip_xyz": null,
+   "arm_state_from": "q from the last arm record before it",
+   "what": "result: cap on the table (open side up), box turned by 31 deg, arm at the ready pose"
+  },
+  {
+   "file": "0090_grid_plan_raw.jpg",
+   "t": "2026-11-11 14:55:24",
+   "q_deg": [
+    -4.39,
+    -94.04,
+    84.9,
+    68.29,
+    3.64
+   ],
+   "gripper_raw": 2166,
+   "tip_xyz": null,
+   "arm_state_from": "q from the last arm record before it",
+   "what": "same scene, arm parked"
+  },
+  {
+   "file": "0094_cal_2_raw.jpg",
+   "t": "2026-11-11 14:57:17",
+   "q_deg": [
+    22.06,
+    6.77,
+    28.74,
+    54.84,
+    0.04
+   ],
+   "gripper_raw": 2067,
+   "tip_xyz": [
+    0.2023,
+    -0.0663,
+    -0.015
+   ],
+   "arm_state_from": "q from this record",
+   "what": "after the take-out, the arm at a calibration pose: the cap on the table, the rest in the box; the blue disc lies on the blue block and its near edge catches the light (it must not be called open)"
+  },
+  {
+   "file": "0108_cal_9_raw.jpg",
+   "t": "2026-11-11 14:59:39",
+   "q_deg": [
+    19.51,
+    49.39,
+    -36.56,
+    78.13,
+    -0.23
+   ],
+   "gripper_raw": 2067,
+   "tip_xyz": [
+    0.2811,
+    -0.0859,
+    -0.0222
+   ],
+   "arm_state_from": "q from this record",
+   "what": "same scene, arm probing the table nearby: the cap lies in its shadow"
+  },
+  {
+   "file": "110117_03_final2.jpg",
+   "t": "2026-11-11 11:01:17",
+   "q_deg": [
+    0.09,
+    -35.95,
+    14.59,
+    91.49,
+    -17.08
+   ],
+   "gripper_raw": 2476,
+   "tip_xyz": null,
+   "arm_state_from": "ready pose (wrist roll as at the release)",
+   "what": "morning, after a pick: floor mostly covered (disc on the ivory cylinder, cap on its side); arm at the ready pose"
+  }
+ ]
+}

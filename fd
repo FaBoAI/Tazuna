@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# fd - launcher for TAZUNA (TAZUNA Robotics Harness; formerly JetHarness / Fable Direct), the SO-101 harness (runs fd.py with the lerobot environment's Python).
+# Example:  ./fd do "青いキューブを箱に入れて"      ./fd scene      ./fd park
+exec /home/jetson/miniconda/envs/lerobot/bin/python "$(dirname "$(readlink -f "$0")")/fd.py" "$@"
