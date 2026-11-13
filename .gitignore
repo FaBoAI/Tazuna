@@ -2,107 +2,87 @@
 #
 # Everything else in this folder stays on the robot's computer: run records and photos (runs/), old versions
 # (backups/, with the un-wiped originals of the test photos), video material (video/), what is on the gripper
-# right now (tool_active.json), review and research notes (refs/ except urdf/ and gripper/).
+# right now (tool_active.json), which Python runs the harness here (config/python), review and research notes.
 #
 # - A new top-level file needs a line here, otherwise git does not see it.
 # - Inside the published folders only the listed kinds of file are taken.
 # - Photos are never taken by a pattern. A photo goes in only after someone has looked at it at full size and
-#   wiped what should not be public: `git add -f <photo>`, then `python tools/privacy_wipe.py accept`.
-#   `python tools/privacy_wipe.py check` refuses a tracked photo that is not on the reviewed list or has changed
-#   (run it before every commit; a local pre-commit hook can do that).
+#   wiped what should not be public: `git add -f <photo>`, then `python tools/publish/privacy_wipe.py accept`.
+#   `python tools/publish/privacy_wipe.py check` refuses a tracked photo that is not on the reviewed list or
+#   has changed (run it before every commit; a local pre-commit hook can do that).
 # - NEVER run `git clean -x` or `git clean -X` here: for git all the private folders above are "ignored files",
 #   and it would delete them.
-# - `fd` rewrites some tracked files in normal use (config.json and the calibration files): read `git diff`
-#   before a commit.
+# - `fd` rewrites some tracked files in normal use (config/config.json and the calibration files): read
+#   `git diff` before a commit.
 
 /*
 !/.gitignore
 !/CLAUDE.md
-!/DESIGN.md
-!/INTEGRATION_NOTES.md
 !/LICENSE
 !/NOTICE
 !/PROGRESS.md
 !/README.md
 !/fd
-!/calib_points.json
-!/camera_model.json
-!/config.json
-!/probes.json
-!/blockfit.py
-!/camera.py
-!/capfit.py
-!/fakebus.py
-!/fastcam.py
-!/fd.py
-!/fdtypes.py
-!/grasp.py
-!/gripper_model.py
-!/ink.py
-!/kinematics.py
-!/kinfit.py
-!/nlq.py
-!/penskill.py
-!/phys_bus.py
-!/robot.py
-!/scene.py
-!/servo_bus.py
-!/sheet.py
-!/sim_bus.py
-!/sim_fuzz.py
-!/simpaper.py
-!/skills.py
-!/strokes.py
-!/takeout.py
-!/test_bus_fake.py
-!/test_grasp.py
-!/test_ink.py
-!/test_integration_pen.py
-!/test_kinematics.py
-!/test_motion_phys.py
-!/test_penskill.py
-!/test_scene.py
-!/test_sim.py
-!/test_skills.py
-!/test_strokes.py
-!/test_tooling.py
-!/test_tracking.py
-!/tooling.py
-!/tracking.py
-!/vision.py
-!/drawings/
-!/testdata/
+!/config/
+!/docs/
+!/examples/
+!/tests/
 !/tools/
-!/refs/
 
-/refs/*
-!/refs/urdf/
-!/refs/gripper/
+# config/: the four files that hold the measurements of one rig
+/config/**
+!/config/config.json
+!/config/camera_model.json
+!/config/calib_points.json
+!/config/probes.json
 
-# inside the published folders: only these kinds of file, whatever else is dropped there
-/drawings/**
-!/drawings/**/
-!/drawings/**/*.json
-/testdata/**
-!/testdata/**/
-!/testdata/**/*.json
-!/testdata/**/*.npy
-# an unused copy of tools/pen_draw/pen_state.json
-/testdata/pen_20261111/pen_state.json
+# docs/ and examples/: text (no photos). The two icons are the only pictures, named one by one; they are on the
+# reviewed list too.
+/docs/**
+!/docs/**/
+!/docs/**/*.md
+!/docs/images/tazuna-icon.png
+!/docs/images/tazuna-horse.png
+/examples/**
+!/examples/**/
+!/examples/**/*.md
+
+# tests/: the suites (*.py and README.md at the top), their data, the reference URDF and meshes. Private notes and
+# test outputs lie in these folders on the robot's computer, so each folder takes only the kinds of file that are
+# published from it.
+/tests/*
+!/tests/*.py
+!/tests/README.md
+!/tests/testdata/
+!/tests/refs/
+# tests/testdata/: recorded data (json, npy); photos only by `git add -f` (see the top of this file)
+/tests/testdata/**
+!/tests/testdata/**/
+!/tests/testdata/**/*.json
+!/tests/testdata/**/*.npy
+# an unused copy of tools/prototypes/pen_draw/pen_state.json
+/tests/testdata/pen_20261111/pen_state.json
+# tests/refs/: only the URDF folder (urdf, xml, stl, the upstream README) and the gripper reference (py); not the
+# review and research notes, and not the answers of the GitHub API about the upstream repository
+/tests/refs/*
+!/tests/refs/urdf/
+!/tests/refs/gripper/
+/tests/refs/urdf/**
+!/tests/refs/urdf/**/
+!/tests/refs/urdf/**/*.urdf
+!/tests/refs/urdf/**/*.xml
+!/tests/refs/urdf/**/*.stl
+!/tests/refs/urdf/README.md
+/tests/refs/gripper/**
+!/tests/refs/gripper/**/
+!/tests/refs/gripper/**/*.py
+
+# tools/: the sources, one folder per feature
 /tools/**
 !/tools/**/
 !/tools/**/*.py
 !/tools/**/*.json
 !/tools/**/*.md
-/refs/urdf/**
-!/refs/urdf/**/
-!/refs/urdf/**/*.urdf
-!/refs/urdf/**/*.xml
-!/refs/urdf/**/*.stl
-!/refs/urdf/README.md
-/refs/gripper/**
-!/refs/gripper/**/
-!/refs/gripper/**/*.py
 
 __pycache__/
 .*/

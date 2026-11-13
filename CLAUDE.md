@@ -1,7 +1,7 @@
 # TAZUNA — SO-101 を 1 コマンドで動かす（オペレーター向け。TAZUNA Robotics Harness。旧称 JetHarness / Fable Direct）
 
 （この手順書は、作者の装置 1 組 = この SO-101・このカメラ・この机・この PC のためのものです。パスも校正値もその装置の
-ものなので、別の環境では README の「はじめに」を先に読んでください。）
+ものなので、別の環境では [docs/MANUAL.md](docs/MANUAL.md) の「はじめに」を先に読んでください。）
 
 `/home/jetson/lerobot/tazuna/fd` が SO-101 フォロワーアームの操作コマンド。
 **1 回の呼び出しで「見る → 計画 → つかむ → 箱に入れる（または箱から取り出して机に置く）→ 確認」まで終わる。**
@@ -189,13 +189,20 @@ $FD tool rest                                      # 片付け（park は使え�
   `--frame` は `--sim` か `--dry` と一緒のときだけ使える（保存画像で実機は動かせない: 拒否される）。
   `fd --sim draw` / `fd --sim tool calibrate` は紙もカメラもシミュレーションで、実カメラを開かない。
   `fd --sim park` / `fd --sim repl` の終了は、実カメラの設定（自動露出へ戻す）に触れない（11/12 に修正）。
+  設定や校正を書き換えるコマンド（`config --set` / `calib-fit` / `calib-roll` / `table-fit` / `ref`）と `camera` は、`--sim` を
+  付けると断られる（11/13 に修正。それまでは `--sim` でも実機の設定ファイルを書き換えていた）。結果だけ見るなら `--dry`。
+  `fd calib-roll` を `--dry` なしで実行しない（同じ校正点で保存し直すと、手首の原点の補正が二重にかかる）。
 - `fd park` と、箱が腕の陰のときの畳み込みは、机の上の物を見ずに収納姿勢へ下ろす。`take` はその場所（ロボット
   正面、爪先が x 約 0.18・y 約 0.01）の 4 cm 以内には物を置かないが、ほかの理由でそこに物があるときは
   `fd park` の前にどけてもらう。
 - `fd torque off` は腕が落ちる。終了は必ず `fd park`（ツールが付いているときは `fd tool rest`）。
 - ユーザーがテレオペ中は実機コマンドを実行しない（/dev/ttyACM0 を奪わない）。
+- 実機のコマンドは、必ず `/home/jetson/lerobot/tazuna/fd` から実行する。同じ PC にあるほかのコピー（取り出し直したもの、
+  作業用の写し）は、いま付いている道具の登録（`tool_active.json`）を知らないので、`park` や `ready` でペンを机に押し込む。
+  ほかのコピーでは `--sim` だけ。
 - LeRobot の校正プロンプト（"use file"）は受けない。サーボ EEPROM の校正はこのアームの基準値で、
   `my_follower_arm.json` とは一致しない。上書きすると全座標が狂う。
 - 速度段（`--tier normal|fast`）は `fd bench --tier T --accept` が実機で合格したものだけ使える。
 
-詳しい説明・調整方法・朝の実機確認手順: [README.md](README.md)。設計と根拠: [DESIGN.md](DESIGN.md)。
+詳しい説明・調整方法・朝の実機確認手順: [docs/MANUAL.md](docs/MANUAL.md)。設計と根拠: [docs/DESIGN.md](docs/DESIGN.md)。
+概要: [README.md](README.md)。プログラムは `tools/機能/` に分かれています（一覧は [tools/README.md](tools/README.md)）。

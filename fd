@@ -1,4 +1,21 @@
 #!/usr/bin/env bash
-# fd - launcher for TAZUNA (TAZUNA Robotics Harness; formerly JetHarness / Fable Direct), the SO-101 harness (runs fd.py with the lerobot environment's Python).
+# fd - the TAZUNA command (TAZUNA Robotics Harness): one request = one call = one JSON answer.
 # Example:  ./fd do "青いキューブを箱に入れて"      ./fd scene      ./fd park
-exec /home/jetson/miniconda/envs/lerobot/bin/python "$(dirname "$(readlink -f "$0")")/fd.py" "$@"
+#
+# Which Python runs it: $TAZUNA_PYTHON when set, else the path in config/python (one line; a file of this
+# computer, not in the repository), else python3. It needs numpy, OpenCV, feetech-servo-sdk and pyserial.
+# A path that cannot be run is answered with one JSON error as well.
+HERE="$(dirname "$(readlink -f "$0")")"
+PY="${TAZUNA_PYTHON:-}"
+if [ -z "$PY" ] && [ -f "$HERE/config/python" ]; then
+  PY="$(tr -d '\r' < "$HERE/config/python" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d' | head -n 1)"
+fi
+case "$PY" in "~/"*) PY="$HOME/${PY#\~/}" ;; esac
+PY="${PY:-python3}"
+if ! command -v "$PY" >/dev/null 2>&1; then
+  shown="${PY//\\/\\\\}"
+  shown="${shown//\"/\\\"}"
+  printf '{"ok": false, "error": "PythonNotFound", "message": "the Python for TAZUNA was not found: %s. Set TAZUNA_PYTHON, or write the path of a Python that has numpy, OpenCV (cv2), feetech-servo-sdk and pyserial into config/python"}\n' "$shown"
+  exit 1
+fi
+exec "$PY" "$HERE/tools/cli/fd.py" "$@"

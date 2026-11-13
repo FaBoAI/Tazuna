@@ -6,12 +6,12 @@ This repository is licensed under the Apache License, Version 2.0 (see LICENSE).
 Files from other projects
 -------------------------
 
-refs/urdf/
+tests/refs/urdf/
     URDF, MJCF and STL mesh files of the SO-101 arm, taken from
     https://github.com/TheRobotStudio/SO-ARM100 (folder Simulation/SO101, commit
     a758567c3978dfeefe282ede0500085a48fe8f78 of 2026-10-06), which is licensed under the
     Apache License, Version 2.0. README.md in that folder is the upstream README.
-    refs/urdf/history/ holds four versions of so101_new_calib.urdf from the history of the same
+    tests/refs/urdf/history/ holds four versions of so101_new_calib.urdf from the history of the same
     repository (the short commit id is in each file name; 385e8d7 is the current one).
     Not copied: so101_leader_new_calib.urdf, so101_new_calib_camera.xml and the two camera meshes
     that so101_new_calib_camera.urdf refers to (wrist_camera_mount_so101_v1.stl,
@@ -19,5 +19,5 @@ refs/urdf/
     The tests use so101_new_calib.urdf and the meshes as an independent reference for the kinematics
     and the gripper shape; the other files are kept for reference.
     Numbers taken from them (joint origins, link masses and centres of mass, gripper geometry) are
-    also in kinematics.py, phys_bus.py, gripper_model.py, refs/gripper/so101_gripper_model.py and
-    test_kinematics.py.
+    also in tools/ik/kinematics.py, tools/ik/gripper_model.py, tools/sim/phys_bus.py,
+    tests/refs/gripper/so101_gripper_model.py and tests/test_kinematics.py.
