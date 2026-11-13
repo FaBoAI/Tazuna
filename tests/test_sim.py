@@ -1757,7 +1757,7 @@ def test_sim_never_changes_the_rig_files():
         return lambda *a, **k: touched.append(name)
 
     saved = (fd.edit_config_file, fd._append_json, C.CameraModel.save, C.grab, C.lock_settings, C.restore_auto, fd.RUNS,
-             R.CONFIG_PATH, os.environ.get("FD_CONFIG"))
+             R.CONFIG_PATH, os.environ.get("FD_CONFIG"), fd.PROBES)
     real_edit = fd.edit_config_file
 
     def run(argv):
@@ -1772,6 +1772,9 @@ def test_sim_never_changes_the_rig_files():
             C.CameraModel.save, C.grab = recorder("camera model"), recorder("photo")
             C.lock_settings, C.restore_auto = recorder("camera lock"), recorder("camera auto")
             fd.RUNS = tmp
+            fd.PROBES = os.path.join(tmp, "probes.json")      # (the rig's own probes file may have been moved away)
+            with open(fd.PROBES, "w") as f:
+                json.dump([{"xy": [0.17, 0.0], "z": -0.002}, {"xy": [0.14, -0.10], "z": -0.003}, {"xy": [0.20, -0.17], "z": -0.002}], f)
             os.environ.pop("FD_CONFIG", None)
             for argv in (["--sim", "config", "--set", "speed_tier=\"slow\""], ["--sim", "table-fit"], ["--sim", "calib-roll"],
                          ["--sim", "calib-fit"], ["--sim", "ref"], ["--sim", "camera", "auto"], ["--sim", "camera", "lock"]):
@@ -1782,6 +1785,12 @@ def test_sim_never_changes_the_rig_files():
             assert rc == 0 and res["ok"] and "zero_ticks" in res, res
             rc, res = run(["--sim", "table-fit", "--dry"])           # so is looking at a fit without saving
             assert rc == 0 and res["ok"] and res["saved"] is False and touched == [], (res, touched)
+            # table-fit on the real rig: its probed heights read too deep, so it saves only when told to
+            rc, res = run(["table-fit"])
+            assert rc == 1 and res["error"] == "SafetyError" and "--force" in res["message"] and touched == [], (res, touched)
+            rc, res = run(["table-fit", "--force"])
+            assert rc == 0 and res["saved"] is True and touched == ["config"], (res, touched)
+            touched.clear()
             # the function that writes the configuration: no file out of nothing, nothing beside $FD_CONFIG
             fd.edit_config_file = real_edit
             R.CONFIG_PATH = os.path.join(tmp, "config.json")
@@ -1796,6 +1805,7 @@ def test_sim_never_changes_the_rig_files():
         finally:
             (fd.edit_config_file, fd._append_json, C.CameraModel.save, C.grab, C.lock_settings, C.restore_auto, fd.RUNS,
              R.CONFIG_PATH) = saved[:8]
+            fd.PROBES = saved[9]
             if saved[8] is None:
                 os.environ.pop("FD_CONFIG", None)
             else:

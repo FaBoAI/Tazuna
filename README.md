@@ -171,8 +171,11 @@ flowchart TB
 ```bash
 git clone https://github.com/FaBoAI/Tazuna.git
 cd Tazuna
+python3 -m venv .venv && . .venv/bin/activate
 pip install numpy opencv-python feetech-servo-sdk pyserial
 ```
+
+（Ubuntu 23.04 以降などでは、システムの Python に直接 `pip install` できないので、仮想環境の中に入れます。）
 
 保存した写真を見せて、シミュレーションのアームで「青いキューブを箱に入れて」を実行します。
 

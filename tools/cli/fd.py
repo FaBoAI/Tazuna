@@ -1963,10 +1963,16 @@ def cmd_calib_at(arm, a):
 def cmd_table_fit(arm, a):
     """Fit the table plane z = a + b*x + c*y (base frame) to the probe results. The fingertip
     floor limit is put at the HIGHEST probed point, so no ordinary command can go below a
-    surface that was actually touched."""
+    surface that was actually touched.
+    Saved only with --force: the probed heights read 3-18 mm too deep on this arm (the fingertip slides outward
+    after the first touch), so the fit puts the table and the fingertip floor limit that much too low."""
     if not a.dry:
         _not_with_sim(a, "write table_z, floor_z and table_plane into the rig's real configuration file",
                       "Use --dry to see the fit without saving, or run it without --sim")
+        if not a.force:
+            raise SafetyError("table-fit would replace table_z, floor_z and table_plane by the probed heights, which read "
+                              "3-18 mm too deep on this arm (docs/MANUAL.md chapter 9): nothing was written. --dry shows "
+                              "the fit; --force saves it")
     pts = json.load(open(PROBES))
     if a.drop:
         pts = [p for i, p in enumerate(pts) if i not in set(a.drop)]
@@ -2414,6 +2420,7 @@ def build_parser():
     s.add_argument("--drop", type=int, nargs="*")
     s.add_argument("--flat", action="store_true")
     s.add_argument("--dry", action="store_true")
+    s.add_argument("--force", action="store_true", help="save the fit although probed heights read 3-18 mm too deep")
     return p
 
 
