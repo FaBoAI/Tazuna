@@ -21,7 +21,11 @@ LLM（Claude などの AI モデル）は、人の言葉を理解して段取り
 - **いま動くロボット**: SO-101（フォロワーアーム）1 台。Jetson Orin Nano Super と USB カメラ 1 台で動かしています。
 - **目指していること**: SO-101、双腕ロボット、ヒューマノイドを、AI から同じやり方で動かせるようにすること。
 - **いまの状況**: 「物を箱に入れる」は実機で動いています。「箱から取り出す」と「ペンで描く」は、シミュレーションと
-  保存した写真での確認までです。くわしくは [PROGRESS.md](PROGRESS.md)。
+  保存した写真での確認までです。2026-11-13 には、筆をグリッパーに留めて、水彩画を 2 枚、実機で描きました（赤べこ、雷門。
+  その日の時点の `fd paint` と、その場で書いたスクリプトで）。その夜から翌朝にかけて、筆先の測定・爪の保持・紙の高さの
+  測定などをコマンドにし、3 回の検証で見つかった所を直しましたが（`fd calib-air`、`fd tool jaw`、`fd paint contact` ほか）、
+  **その夜に加えたコマンドは、実機では一度も動かしていません**（シミュレーションと、その日の保存写真だけ）。くわしくは [PROGRESS.md](PROGRESS.md) と、
+  [docs/MANUAL.md](docs/MANUAL.md) の 11 章。
 
 ## プロンプトと、できたこと
 
@@ -31,6 +35,7 @@ LLM（Claude などの AI モデル）は、人の言葉を理解して段取り
 |---|---|---|---|
 | 青い円柱を箱に入れて | `fd do "青い円柱を箱に入れて"` | **実機で成功**（2026-11-11）。コマンドが返した `say` は「青い円柱を箱に入れました（22秒）。」で、AI はこれをそのまま人に伝えます | <a href="https://www.youtube.com/watch?v=vImrWLpaMcs&list=PLS2xQbZhQGBk"><img src="https://img.youtube.com/vi/vImrWLpaMcs/mqdefault.jpg" width="200" alt="動画: [Tazuna開発記] Day1 Fable5.2 Direct用のRoboハーネスを開発"></a> |
 | SO-101の先にマジックペンをつけました。猫の絵を描いてください | `fd tool attach …` → `fd tool calibrate` → `fd draw cat` | **実機ではこれから試します**（左のコマンドは、シミュレーションで確かめただけです）。動画の猫は、2026-11-11 にその場で書いた試作スクリプトで描いた 1 枚です（線 18 本、約 4 分。線は途切れがち）。そこで分かったことを組み込んだのが、左のコマンドです | <a href="https://www.youtube.com/watch?v=Fakua6h1_IE&list=PLS2xQbZhQGBk"><img src="https://img.youtube.com/vi/Fakua6h1_IE/mqdefault.jpg" width="200" alt="動画: [Tazuna開発記] マジックペンで絵を描いてみる"></a> |
+| 浅草雷門を水彩画で | `fd paint status`（次の一手を言う）→ `fd calib-air` → `fd paint contact` → `fd paint preview` → `fd paint run`（レイヤーごと） | **絵は実機で描きました**（2026-11-13。細い丸筆、8 層・70 本、時計で約 50 分）。そのときに使ったのは、その日の版の `fd paint look / locate / test / run / rinse` と、その場で書いたスクリプトです。スクリプトの部分をコマンドにしたのが左の手順で、**新しいコマンドは、実機ではこれから試します**（シミュレーションと保存した写真で確かめただけです。説明書の 11 章） | <a href="https://www.youtube.com/watch?v=cK-lYeAAcFo&list=PLS2xQbZhQGBk"><img src="https://img.youtube.com/vi/cK-lYeAAcFo/mqdefault.jpg" width="200" alt="動画: [Tazuna開発記] 雷門を描いてみる"></a> |
 | 箱の中の白いキャップを取り出して | `fd do "箱の中の白いキャップを取り出して"` | シミュレーションで動作。実機ではこれから試します | — |
 
 動画は YouTube の再生リスト [Tazuna](https://www.youtube.com/playlist?list=PLS2xQbZhQGBk) にまとめています。
@@ -97,7 +102,9 @@ flowchart LR
 - サーボには一時的な値（RAM）しか書きません。サーボに保存された校正は書き換えません。
 - 否定や条件の入った依頼文（「〜しないで」「〜したら」など）は実行せず、LLM に返します。
 - 腕を上げたままトルクを切ること、保存した写真で実機を動かすことは、コマンドが断ります。
-- グリッパーに道具（ペン）を登録している間は、道具を机に押し付けるおそれのあるコマンドを断ります。
+- グリッパーに道具（ペン、筆）を登録している間は、道具を机に押し付けるおそれのあるコマンドを断ります。筆先を測っていない筆、
+  紙の高さを測ったときと状態の違う筆では、描きません。ペンの校正は、筆には行いません。
+- 実機のロック（`fd hw lock`）が掛かっている間は、サーボもカメラも開きません（`--sim` とテストは動きます）。
 - その装置の設定ファイル（`config/config.json`）が無いとき、または測った値が入っていないときは、実機のアームを開きません。
 - `--sim` を付けたコマンドは、装置の設定・校正のファイルも、本物のカメラの設定も書き換えません（書き換えるコマンドは断ります）。
 
@@ -111,7 +118,7 @@ flowchart LR
 flowchart TB
     L["LLM（Claude Code など）"]
     C["tools/cli<br>コマンド fd・依頼文の解釈（ルール）"]
-    S["作業ごとのスキル<br>tools/pick（つかんで運ぶ）・tools/takeout（取り出しの計画）・tools/draw（道具と描画）"]
+    S["作業ごとのスキル<br>tools/pick（つかんで運ぶ）・tools/takeout（取り出しの計画）・tools/draw（道具と描画）・tools/paint（筆と絵の具）・tools/calib（空中校正）"]
     B["土台<br>tools/vision（カメラと画像認識）・tools/ik（運動学）・tools/motion（動作制御と安全検査）"]
     H["ハードウェア<br>USB カメラ 1 台・SO-101（サーボ 6 個）"]
     X["tools/sim<br>シミュレーションのアーム・サーボ・紙"]
@@ -123,7 +130,7 @@ flowchart TB
 |---|---|
 | `fd` | 起動スクリプト（`tools/cli/fd.py` を呼びます） |
 | [`tools/`](tools/) | プログラム。機能ごとのフォルダに分かれています（下の表） |
-| [`tests/`](tests/) | テスト（13 ファイル、566 件）と、テスト用のデータ。ロボットなしで動きます |
+| [`tests/`](tests/) | テスト（19 ファイル、804 件。2026-11-14 朝）と、テスト用のデータ。ロボットなしで動きます |
 | [`examples/`](examples/) | プロンプト例（人が AI に頼む言葉、実行されるコマンド、返ってくる結果） |
 | `config/` | その装置で測った設定と校正 |
 | [`docs/`](docs/) | 説明書（[MANUAL.md](docs/MANUAL.md)）、組み込みの手順（[SETUP_SO101.md](docs/SETUP_SO101.md)）、設計メモ |
@@ -132,14 +139,15 @@ flowchart TB
 | `tools/` の中 | 機能 |
 |---|---|
 | `cli/` | コマンド `fd` と、依頼文の解釈 |
-| `motion/` | 動作制御と安全検査、サーボとの通信 |
+| `motion/` | 動作制御と安全検査、サーボとの通信、実機のロック（`fd hw`） |
 | `ik/` | 運動学（関節の角度と指先の位置の変換。順運動学・逆運動学）、グリッパーの形 |
 | `vision/` | カメラ、画像認識、カメラの校正モデル |
 | `pick/` | つかんで運ぶスキル（箱に入れる・箱から取り出す）と、つかみ方の計画。待機・収納も |
 | `takeout/` | 箱から取り出すときの、つかみ方と置き場所の計画 |
-| `draw/` | グリッパーに付けた道具（ペン）の登録・校正と、線画を描く |
+| `draw/` | グリッパーに付けた道具（ペン、筆）の登録、ペンの校正と線画の描画、可動爪に留めた道具の爪（`fd tool jaw`） |
+| `paint/` | 筆と絵の具で描く（`fd paint`）: 筆の動きと深さの上限、絵の具と水、紙の高さの測定、レイヤーの実行、筆の模型と絵のプラン |
 | `sim/` | 実機の代わりになるシミュレーション（サーボ、紙とペンとカメラ） |
-| `calib/` | 校正を調べ直すときに、手で実行するスクリプト |
+| `calib/` | 空中校正（`fd calib-air`: 空中の写真から、道具の先端とカメラの位置を測る）と、校正を調べ直すときに手で実行するスクリプト |
 | `publish/` | 公開する写真から、写っていた人を消す道具 |
 | `prototypes/` | 2026-11-11 に書いた試作スクリプトの記録 |
 
@@ -183,7 +191,9 @@ pip install numpy opencv-python feetech-servo-sdk pyserial
 ./fd --sim do "青いキューブを箱に入れて" --frame tests/testdata/0148_cube_scene_raw.jpg
 ```
 
-テストを全部実行します（依頼文の解釈の自己テストと、テスト 13 ファイル。Jetson Orin Nano Super で約 20 分）。
+テストを全部実行します（依頼文の解釈の自己テストと、テスト 19 ファイル。Jetson Orin Nano Super で約 35 分: 2026-11-14 未明に
+20 本を 1 本ずつ順に実行したときは 34.7 分で、20 本とも合格でした。そのあとの修正で、空中校正のテストが約 2 分長くなって
+います。2026-11-13 の写真と記録を使うテストは、それがない場所では `SKIP` になります）。
 
 ```bash
 python tests/run_all.py
@@ -196,7 +206,7 @@ python tests/run_all.py
 | 文書 | 内容 |
 |---|---|
 | [PROGRESS.md](PROGRESS.md) | 作業進捗。いまできること、実機で確かめたこと、まだできていないこと |
-| [docs/MANUAL.md](docs/MANUAL.md) | 説明書。コマンドの細部、調整できる項目、実機確認の手順、安全のための設計、既知の課題 |
+| [docs/MANUAL.md](docs/MANUAL.md) | 説明書。コマンドの細部、調整できる項目、実機確認の手順、安全のための設計、既知の課題。筆と絵の具、空中校正、爪、実機のロックは 11 章 |
 | [docs/SETUP_SO101.md](docs/SETUP_SO101.md) | SO-101 に組み込む手順 |
 | [examples/](examples/) | プロンプト例 |
 | [CLAUDE.md](CLAUDE.md) | AI（Claude Code）がこのハーネスを使うときの手順書 |

@@ -1,6 +1,6 @@
 """Run every suite, one after another, each in its own process; print one line per suite.
 
-    python tests/run_all.py            all 14 (about 20 minutes on a Jetson Orin Nano)
+    python tests/run_all.py            all 20 (about 30 minutes on a Jetson Orin Nano)
     python tests/run_all.py ink tool   only the suites whose file name contains one of the words
 
 The suites run with the Python that `fd` uses ($TAZUNA_PYTHON, else the first line of config/python, else the one
@@ -17,7 +17,8 @@ ROOT = os.path.dirname(HERE)
 SUITES = [os.path.join("tools", "cli", "nlq.py")] + [os.path.join("tests", n) for n in (
     "test_ink.py", "test_tooling.py", "test_strokes.py", "test_tracking.py", "test_integration_pen.py", "test_penskill.py",
     "test_skills.py", "test_sim.py", "test_grasp.py", "test_kinematics.py", "test_scene.py", "test_bus_fake.py",
-    "test_motion_phys.py")]
+    "test_motion_phys.py", "test_hwlock.py", "test_cli_words.py", "test_tooljaw.py", "test_paint_model.py", "test_paint.py",
+    "test_aircal.py")]
 
 
 def harness_python() -> str:

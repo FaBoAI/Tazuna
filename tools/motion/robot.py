@@ -305,9 +305,19 @@ class Arm:
     def q_limits(self) -> dict:
         """Joint limits in URDF radians: servo-stored limits minus margin (mapped through the
         configured zero tick and sign of EVERY joint, wrist_roll included: KI-3), intersected
-        with the optional soft limits."""
+        with the optional soft limits and with the limits of the tool that is taped on
+        (tooling.Tool.joint_limits_deg: e.g. a long brush handle that reaches back over the forearm).
+
+        A tool can only narrow a joint's range. Limits of a tool that cannot be applied are an error
+        (SafetyError), never "no limits": a joint the arm does not have, a range that is not two numbers
+        lo < hi (tooling.check_joint_limits), and a range that leaves nothing of what the arm itself allows
+        (every pose would be refused then, by texts that do not name the cause)."""
         m = self.cfg["limit_margin_ticks"]
         z, s = self.cfg["zero_ticks"], self.cfg["sign"]
+        tool_lim = getattr(self.tool, "joint_limits_deg", None) or {}
+        if tool_lim:
+            import tooling  # (tooling imports this module: not at the top)
+            tool_lim = tooling.check_joint_limits(tool_lim) or {}
         out = {}
         for j in ARM:
             lo_raw, hi_raw = self.raw_limits[j]
@@ -317,6 +327,17 @@ class Arm:
             soft = self.cfg.get("soft_limits_deg", {}).get(j)
             if soft:
                 a, b = max(a, math.radians(soft[0])), min(b, math.radians(soft[1]))
+            # limits that hold only while this tool is taped on
+            extra = tool_lim.get(j)
+            if extra:
+                lo_t, hi_t = math.radians(extra[0]), math.radians(extra[1])
+                if max(a, lo_t) > min(b, hi_t):
+                    raise SafetyError(
+                        f"tool '{getattr(self.tool, 'name', '?')}': its joint limit {j} = [{extra[0]:g}, {extra[1]:g}] deg "
+                        f"lies outside what the arm itself allows for {j} ([{math.degrees(a):.1f}, {math.degrees(b):.1f}] "
+                        f"deg): no pose would be left. Correct it with `fd tool set --joint-limit {j}=LO:HI` (or "
+                        f"`--joint-limit none`)")
+                a, b = max(a, lo_t), min(b, hi_t)
             out[j] = (a, b)
         return out
 
@@ -1478,6 +1499,47 @@ class Arm:
         if self.tool is not None:
             import tooling
             raise SafetyError(tooling.lock_message(self.tool, what))
+
+    def jaw_goal(self, goal_raw, max_ahead_ticks: int = 85) -> int:
+        """The one gripper goal that exists while a tool is attached: a small step of the jaw of a tool that
+        is recorded as taped to the OUTER face of the moving jaw (tool.on_jaw == "moving_outer"). Nothing is
+        between the jaws then, so closing them crushes nothing and opening them drops nothing; on 2026-11-13
+        a brush taped there was rigid only with the jaw closed against the fixed jaw and held by a light
+        squeeze. tooling.move_jaw / tooling.hold_jaw walk the goal step by step and watch how the jaw follows
+        (`fd tool jaw close|open`); every other gripper command stays refused by _tool_lock.
+
+        Refused before anything is written (SafetyError): no tool, or a tool that is not recorded there (the
+        lock); the gripper torque off (a goal must never be what switches a servo on); a goal that is not a
+        whole number inside the gripper servo's own position limits; a goal more than max_ahead_ticks (1 ..
+        85: the lag at which a walk stops plus one step) from where the jaw stands, so that a caller who
+        lost count cannot throw the jaw or stall the servo on it. Returns the goal written."""
+        tool = self.tool
+        if tool is None:
+            raise SafetyError("jaw_goal moves the jaw of a tool taped to its outer face, and no tool is attached "
+                              "(set_gripper is the command of the bare gripper)")
+        if getattr(tool, "on_jaw", None) != "moving_outer":
+            self._tool_lock("moving the jaw (jaw_goal)")
+        if self.raw_limits is None:
+            self.raw_limits = self.bus.limits()
+        lo, hi = self.raw_limits["gripper"]
+        try:
+            goal, ahead = float(goal_raw), float(max_ahead_ticks)
+        except (TypeError, ValueError):
+            goal = ahead = float("nan")
+        if isinstance(goal_raw, bool) or not (math.isfinite(goal) and goal == int(goal) and lo <= goal <= hi):
+            raise SafetyError(f"jaw goal {goal_raw!r} is not a whole number inside the gripper servo's own limits "
+                              f"[{lo}, {hi}]; nothing was written")
+        if not (math.isfinite(ahead) and 1 <= ahead <= 85):
+            raise SafetyError(f"jaw_goal: max_ahead_ticks must be 1 .. 85 (got {max_ahead_ticks!r})")
+        if self.bus.read("gripper", "Torque_Enable") != 1:
+            raise SafetyError("gripper torque is off; run torque_on first")
+        pos = self.bus.read("gripper", "Present_Position")
+        self._jaw_raw = pos
+        if abs(goal - pos) > ahead:
+            raise SafetyError(f"jaw goal {int(goal)} is {abs(goal - pos):.0f} ticks from where the jaw stands (raw {pos}); "
+                              f"a step may be at most {ahead:.0f} ticks ahead of it. Nothing was written")
+        self.bus.write("gripper", "Goal_Position", int(goal))
+        return int(goal)
 
     def _gripper_clamp(self, raw=None):
         """Allowed gripper goal range (lo, hi); with `raw`, that goal clamped into it. The lower

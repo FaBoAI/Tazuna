@@ -20,7 +20,7 @@ TOOLS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TOOLS)
 CONFIG_DIR = os.path.join(ROOT, "config")
 # feature folders that hold importable modules (tools/prototypes/ holds records and is not on the path)
-FEATURES = ("cli", "motion", "ik", "vision", "pick", "takeout", "draw", "sim", "calib", "publish")
+FEATURES = ("cli", "motion", "ik", "vision", "pick", "takeout", "draw", "paint", "sim", "calib", "publish")
 
 for _name in FEATURES:
     _path = os.path.join(TOOLS, _name)

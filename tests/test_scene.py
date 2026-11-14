@@ -7,6 +7,11 @@
 
 No hardware is touched without --live (and even then only the camera). Saved frames and the hand
 measured ground truth are in tests/testdata/ (frames.json). camera_model.json and config.json are only read.
+The hardware lock (tools/motion/hwlock.py) is the USER's here, and --live honours it. Two tests drive
+fastcam.py / camera.py with stand-ins in the place of the camera and of v4l2-ctl; with the user's lock set those
+modules refuse before they reach the stand-ins, so for the duration of these two tests ONLY the lock is stood in
+for (_lock_stood_in: "not locked"), and while it is, a real cv2.VideoCapture, a real subprocess.run and any open
+of a camera or servo device fail the test instead of reaching the hardware.
 tests/testdata/takeout_20261111/ holds frames of the day the cap was taken out of the box by hand-driven
 commands (crowded box, turned box, gripper in front of it): the test_takeout_* tests compare only
 presence, kinds, counts, sizes and relative positions on them, never absolute coordinates.
@@ -1813,6 +1818,59 @@ def test_blockfit_capfit_wrappers():
 
 
 # =========================================================================== fastcam (fake device)
+_STOOD_IN = []          # not empty while a test has the hardware lock stood in for (_lock_stood_in)
+
+
+def _no_device_while_stood_in(event, args):
+    """Audit hook, armed only while the hardware lock is stood in for: no camera or servo device is opened and
+    v4l2-ctl is not started. (Outside those two tests it does nothing: --live opens the real camera.)"""
+    if not _STOOD_IN:
+        return
+    if event == "open" and args and isinstance(args[0], (str, bytes)):
+        p = os.fsdecode(args[0])
+        if p.startswith(("/dev/video", "/dev/ttyACM", "/dev/ttyUSB")):
+            raise RuntimeError(f"test_scene: hardware opened while the lock was stood in for: {p}")
+    if event == "subprocess.Popen" and args and "v4l2" in str(args[0]) + str(args[1] if len(args) > 1 else ""):
+        raise RuntimeError("test_scene: v4l2-ctl started while the lock was stood in for")
+
+
+sys.addaudithook(_no_device_while_stood_in)
+
+
+def _lock_stood_in(fn):
+    """Decorator for a test whose camera and v4l2-ctl are stand-ins: for its duration, and for no longer, the
+    hardware lock answers "not locked" (hwlock.info: what camera.py and fastcam.py ask before they touch the
+    device). With the user's lock set, the code under test would otherwise refuse before it reaches the test's
+    stand-ins (2026-11-13: 48 of 50 on the locked rig).
+
+    While the lock is out of the way nothing real may be in reach: cv2.VideoCapture and subprocess.run are
+    refusals unless the test has put its own stand-in there (the test's own save / restore then puts the refusal
+    back, and this decorator the real ones), and the audit hook above refuses device files and v4l2-ctl. There
+    is no suite-wide scratch lock on purpose: `--live` and every other test keep honouring the user's lock."""
+    import functools
+
+    import hwlock
+
+    def no_capture(*a, **k):
+        raise AssertionError(f"test_scene: cv2.VideoCapture{a!r} asked for the real camera while the lock was stood in for")
+
+    def no_run(*a, **k):
+        raise AssertionError(f"test_scene: subprocess.run{a!r} was called for real while the lock was stood in for")
+
+    @functools.wraps(fn)
+    def test(*a, **k):
+        real = (hwlock.info, cv2.VideoCapture, C.subprocess.run)
+        hwlock.info, cv2.VideoCapture, C.subprocess.run = (lambda: None), no_capture, no_run
+        _STOOD_IN.append(fn.__name__)
+        try:
+            return fn(*a, **k)
+        finally:
+            _STOOD_IN.pop()
+            hwlock.info, cv2.VideoCapture, C.subprocess.run = real
+
+    return test
+
+
 class _FakeCapture:
     """Stand-in for cv2.VideoCapture: 30 frames per second, frame k is filled with the value k % 250."""
     period = 1.0 / 30.0
@@ -1851,6 +1909,7 @@ class _FakeCapture:
         self.opened = False
 
 
+@_lock_stood_in
 def test_fastcam_with_fake_device():
     import fastcam
     calls = {"lock": 0, "restore": 0}
@@ -1957,6 +2016,7 @@ def test_fastcam_with_fake_device():
          fastcam.C.auto_modes_on) = saved
 
 
+@_lock_stood_in
 def test_camera_settings_readback():
     """camera.read_settings / settings_locked: the camera's own rounding is not a change, an automatic
     mode or another value is, and 'cannot ask' is reported as unknown (None), never as locked."""
@@ -2001,6 +2061,67 @@ def test_camera_settings_readback():
         assert C.read_settings() == {} and C.settings_locked() is None
     finally:
         C.read_settings, C.subprocess.run = saved_read, saved_run
+
+
+def test_the_lock_is_stood_in_for_only_inside_the_two_fake_camera_tests():
+    """While a test has the hardware lock stood in for (_lock_stood_in), nothing real is in reach: OpenCV's
+    capture, subprocess.run (v4l2-ctl), the device files. Afterwards, also after a test that failed, everything
+    is what it was; only the two tests with a fake camera run that way; and the lock that counts everywhere else,
+    --live included, is the user's."""
+    import hwlock
+    real_info, real_cap, real_run, env_lock = hwlock.info, cv2.VideoCapture, C.subprocess.run, os.environ.get("TAZUNA_HW_LOCK")
+    lock_before = hwlock.info()
+    seen = {}
+
+    @_lock_stood_in
+    def probe():
+        seen["info"], seen["message"] = hwlock.info(), hwlock.message("The camera")
+        for name, fn in (("capture", lambda: cv2.VideoCapture(C.DEV, cv2.CAP_V4L2)),
+                         ("run", lambda: C.subprocess.run(["v4l2-ctl", "-d", C.DEV, "-C", "gain"], capture_output=True)),
+                         ("lock_settings", C.lock_settings), ("restore_auto", C.restore_auto), ("read_settings", C.read_settings),
+                         ("grab", C.grab)):
+            try:
+                fn()
+                seen[name] = "reached the device"
+            except AssertionError as e:
+                seen[name] = str(e)
+        for path in ("/dev/video_none_for_tests", "/dev/ttyACM_none_for_tests", "/dev/ttyUSB_none_for_tests"):
+            try:
+                open(path)
+                seen[path] = "opened"
+            except RuntimeError as e:
+                seen[path] = str(e)
+            except OSError as e:
+                seen[path] = f"asked for ({e})"
+        raise KeyError("a test that fails")
+
+    try:
+        probe()
+        raise AssertionError("the probe did not run to its end")
+    except KeyError:
+        pass
+    assert seen["info"] is None and seen["message"] is None, seen
+    for name in ("capture", "run", "lock_settings", "restore_auto", "read_settings", "grab"):
+        assert "for real while the lock was stood in for" in seen[name] or "asked for the real camera" in seen[name], (name, seen[name])
+    for path in ("/dev/video_none_for_tests", "/dev/ttyACM_none_for_tests", "/dev/ttyUSB_none_for_tests"):
+        assert seen[path] == f"test_scene: hardware opened while the lock was stood in for: {path}", seen[path]
+    # afterwards everything is what it was, and this file never names a lock of its own
+    assert hwlock.info is real_info and cv2.VideoCapture is real_cap and C.subprocess.run is real_run and _STOOD_IN == []
+    assert hwlock.info() == lock_before and os.environ.get("TAZUNA_HW_LOCK") == env_lock
+    with open(__file__, encoding="utf-8") as f:
+        assert 'environ["TAZUNA_HW_LOCK"] =' not in f.read().replace("'", '"').split("def test_the_lock_is_stood_in_for")[0]
+    wrapped = sorted(n for n, f in globals().items() if n.startswith("test_") and hasattr(f, "__wrapped__"))
+    assert wrapped == ["test_camera_settings_readback", "test_fastcam_with_fake_device"], wrapped
+    # outside those two tests the user's lock is honoured: when it is set, the camera code refuses and asks nothing
+    # (not tried on a rig that is not locked: these calls would then go to the real camera)
+    if lock_before is not None:
+        for fn in (lambda: C._locked("The camera"), C.lock_settings, C.restore_auto, C.grab):
+            try:
+                fn()
+                raise AssertionError("the user's hardware lock was not honoured")
+            except hwlock.HardwareLocked:
+                pass
+        assert C.read_settings() == {} and C.settings_locked() is None
 
 
 def live_camera_check():

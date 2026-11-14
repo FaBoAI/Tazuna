@@ -8,6 +8,26 @@ reaches a pose with the tool tip 4-7 cm above the table for tools 2-12 cm long, 
 fingers, or refuses cleanly; torque off is refused in a raised pose; after `detach` the old behaviour is
 back; without a tool file nothing changes.
 
+Joint limits of a tool (2026-11-13: `fd tool attach|set --joint-limit wrist_flex=20:97` for a brush whose
+handle lies over the forearm): they are stored, shown and removed by the commands and survive a load / save
+round; limits that cannot be applied are an error, never "no limits"; Arm.q_limits is the intersection of
+servo, soft and tool limits; IK, tip paths and pose checks refuse beyond them and name the joint; the rest
+pose and the stand-by pose lie inside them or are refused with the way out; free moves stay inside them; an
+arm that was moved by hand to a pose outside a limit can be lifted and comes back inside, never further out;
+tools whose tip is beside or under the fingers keep it above the table.
+
+Added after the review of 2026-11-13: a simulated copy of the real tool (what `fd --sim tool set` stores) is
+read only while the real tool file is what was copied, and a tool attached in simulation stays; `ready`
+refuses, before the torque comes on, when the jaw stands elsewhere than where the tool file has it (8 ticks),
+except for a tool recorded on the fixed jaw or without a jaw position; the example of a brush's wrist limit
+is the measured 97.
+
+Added with round 3 (2026-11-14): the refusal of a locked command names the fold its caller gives (`fd paint rest`
+beside a painting set-up) and is word for word what it was without one; `fd --sim tool detach` says that a mirrored
+real tool is still on; a pen command refused for the jaw (`fd tool calibrate`, `fd draw`) has the way out for that
+tool as its next and a say that names the jaw; a joint limit to change is named in words, not as a command with
+JOINT=LO:HI in backticks.
+
 Every test uses $FD_TOOL (a scratch file), so the real tool_active.json is never read or written.
 """
 
@@ -22,6 +42,7 @@ import io
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -314,8 +335,14 @@ def test_sim_writes_its_own_file_and_mirrors_the_real_one():
         assert rc == 0 and TL.active(sim=True).pitch_deg == 70.0 and TL.active().pitch_deg == 75.0
         r, rc = fd_run(["--sim", "tool", "detach"])
         assert rc == 0 and not os.path.exists(simf) and TL.active().name == "real_pen", r
-        r, rc = fd_run(["--sim", "tool", "detach"])  # nothing simulated left: the real tool is NOT touched
-        assert rc == 0 and r["removed"] is False and "mirrors" in r["note"] and TL.active().name == "real_pen", r
+        r, rc = fd_run(["--sim", "tool", "detach"])  # nothing simulated left: the real tool is NOT touched, and still mirrored
+        assert rc == 0 and r["removed"] is False and TL.active().name == "real_pen" and TL.active(sim=True).name == "real_pen", r
+        # (round 3, T8: this answered "attached": false and 「ツールは登録されていませんでした」 while the simulated arm
+        # carried the mirrored tool; the truth stood in a key "note" only)
+        assert r["attached"] is True and r["mirrors"] == "real_pen" and "note" not in r and "stay locked" in r["next"], r
+        assert "real_pen" in r["say"] and "ロックされたまま" in r["say"] and "登録されていませんでした" not in r["say"], r["say"]
+        r, rc = fd_run(["--sim", "park"])            # ... which is what the next command meets
+        assert rc == 1 and r["stage"] == "tool" and r["tool"] == "real_pen", r
         # a change made in simulation to the mirrored tool is a copy, not a change of the real one
         r, rc = fd_run(["--sim", "tool", "set", "--name", "renamed"])
         assert rc == 0 and TL.active().name == "real_pen" and TL.active(sim=True).name == "renamed", r
@@ -443,6 +470,34 @@ def test_guarded_commands_refuse_without_a_bus_write_when_holding():
     _guard_round("holding")
 
 
+def test_the_refusal_names_the_fold_the_caller_gives():
+    """Round 3 (T14). The refusal of a locked command named `fd tool rest` for every tool; with a painting set-up on
+    record that command is refused over the canvas, and fd names `fd paint rest` instead (fd._fold_words). Here:
+    tooling's half. Without a fold the texts are what they were, word for word; with one, next, reason and say
+    name it, and the detach command in the caller's spelling."""
+    t = pen()
+    old_next = ("`fd tool rest` folds the arm away with the tool on (torque off); once the tool is off the "
+                "gripper, `fd tool detach` unlocks the gripper and `park`")
+    assert TL.NEXT_LOCKED == TL.next_locked() == old_next
+    r = TL.refusal(t, "park")
+    assert r["next"] == old_next and r["reason"] == TL.lock_message(t, "park") and r["reason"].endswith("Nothing moved. " + old_next), r
+    assert "片付けるときは fd tool rest、ツールを外したあとは fd tool detach を使ってください。" in r["say"] and "paint" not in r["say"], r["say"]
+    r = TL.refusal(t, "grip", fold="fd --sim paint rest", detach="fd --sim tool detach")
+    assert r["ok"] is False and r["stage"] == "tool" and r["tool"] == "pen2" and r["message"] == r["reason"], r
+    assert r["next"].startswith("`fd --sim paint rest` folds the arm away with the tool on, clear of the canvas"), r["next"]
+    assert "`fd --sim tool detach` unlocks the gripper" in r["next"] and "fd tool rest" not in r["next"] and r["next"] in r["reason"], r
+    assert "fd paint rest" in r["say"] and "fd tool rest はキャンバスの上に畳むため断られます" in r["say"] and "grip" in r["say"], r["say"]
+    assert "`fd paint rest` folds" in TL.next_locked("fd paint rest") and "`fd tool detach`" in TL.next_locked("fd paint rest")
+    # torque off outside the rest pose: the same word of the caller
+    arm, bus = sim_arm(tool=t)
+    place(arm, TL.ready_q(arm, t))
+    arm.torque_on()
+    bus.sleep(0.5)
+    assert "Use `fd tool rest` (folds the arm away" in TL.torque_off_block(arm)
+    why = TL.torque_off_block(arm, "fd --sim paint rest")
+    assert "Use `fd --sim paint rest` (folds the arm away" in why and "fd tool rest" not in why, why
+
+
 def test_do_that_would_not_move_is_still_answered():
     """`do` is refused only when it would pick or take: a sentence it cannot run is handed back as before."""
     tool = pen()
@@ -485,7 +540,9 @@ def test_commands_that_stay_open_with_a_tool():
                      ["tip", "0", "0", "-0.003", "--rel", "--contact"], ["joints", "wrist_flex=2", "--rel", "--contact"]):
             before, pos = writes(bus), dict(bus.pos)
             r, rc = fd_run(["--sim"] + argv, bus)
-            assert rc == 1 and r["stage"] == "tool" and "--contact" in r["reason"] and "fd draw" in r["next"], (argv, r)
+            assert rc == 1 and r["stage"] == "tool" and "--contact" in r["reason"] and "fd draw" in r["reason"], (argv, r)
+            # (round 3, T12: the pen commands are named in words; the one command in backticks works as it is typed)
+            assert "the pen commands (`fd tool status` says" in r["next"] and "`fd draw`" not in r["next"] + r["reason"], (argv, r)
             assert writes(bus) == before and bus.pos == pos, argv
         r, rc = fd_run(["--sim", "tip", "0", "0", "0.03", "--rel"], bus)                 # and up again
         assert rc == 0, r
@@ -1036,6 +1093,739 @@ def test_old_suite_passes_after_attach_and_detach():
         assert p.returncode == 0 and "failures: 0" in tail and "tests: 97" in tail, tail
 
 
+# ----------------------------------------------------------------------------- joint limits of a tool
+# 2026-11-13: a flat brush with a 30 cm handle lying back over the forearm. The handle hit the forearm when the
+# wrist straightened (below about 20 deg) and when the gripper rolled: `--joint-limit wrist_flex=20:97`,
+# `wrist_roll=-5:5`. The limits were written that morning without a test; these are the tests.
+BRUSH_TIP = [0.0085, 0.0007, 0.0611]                    # the flat brush, measured in the air (+- 1.5 mm)
+BRUSH_LIMITS = {"wrist_flex": [20.0, 97.0], "wrist_roll": [-5.0, 5.0]}
+SIDE_TIP = [-0.09, -0.01, 0.06]                         # a brush on the opened moving jaw: 9 cm beside the finger line
+UNDER_TIP = [0.016, -0.001, 0.056]                      # the same brush with the jaw closed: the tip under the fingers
+
+
+def brush(**over):
+    kw = dict(name="brush", tip_offset=list(BRUSH_TIP), mount="along_fingers", pitch_deg=65.0,
+              joint_limits_deg={j: list(v) for j, v in BRUSH_LIMITS.items()})
+    kw.update(over)
+    return TL.Tool(**kw)
+
+
+def lim_deg(arm):
+    return {j: (math.degrees(a), math.degrees(b)) for j, (a, b) in arm.q_limits().items()}
+
+
+def outside_deg(arm, q, tool=None) -> float:
+    """How far (deg) pose q lies outside the arm's joint limits with `tool` on it (<= 0: inside)."""
+    lim = TL._limits(arm, arm.tool if tool is None else tool)
+    return max(max(math.degrees(lim[j][0] - q[i]), math.degrees(q[i] - lim[j][1])) for i, j in enumerate(ARM))
+
+
+def outside_tool_deg(tool, q) -> float:
+    """How far (deg) pose q lies outside the TOOL's own joint limits (<= 0: inside). The simulated shoulder and elbow
+    droop by a degree under torque, past the arm's own limits where a pose sits at them (the fold): the tool's
+    limits are what a trace of the simulated arm is held to."""
+    return max([max(lo - math.degrees(q[ARM.index(j)]), math.degrees(q[ARM.index(j)]) - hi)
+                for j, (lo, hi) in (tool.joint_limits_deg or {}).items()] or [-1e9])
+
+
+def refused(fn, *texts) -> str:
+    try:
+        fn()
+    except SafetyError as e:
+        for t in texts:
+            assert t in str(e), (t, str(e))
+        return str(e)
+    raise AssertionError("not refused")
+
+
+def test_joint_limits_load_and_save_unchanged():
+    with tool_file(None):
+        t = brush(gripper_raw=2054, notes=["flat brush, its band about 9 mm wide"], contact={"x0": 0.24, "y0": 0.0, "a": 0.0, "rms_mm": 0.4, "points": []})
+        TL.save(t)
+        text = open(TOOL_PATH).read()
+        assert json.loads(text)["joint_limits_deg"] == BRUSH_LIMITS
+        back = TL.active()
+        assert back.joint_limits_deg == BRUSH_LIMITS and back.to_dict() == t.to_dict()
+        TL.save(back)
+        assert open(TOOL_PATH).read() == text, "a load / save round changed the file"
+        # written by hand with whole numbers, in another order, with a joint more: the same limits come back
+        d = json.loads(text)
+        d["joint_limits_deg"] = {"wrist_roll": [-5, 5], "shoulder_pan": [-90, 90.5], "wrist_flex": [20, 97]}
+        with open(TOOL_PATH, "w") as f:
+            json.dump(d, f)
+        back = TL.active()
+        assert back.joint_limits_deg == {"wrist_roll": [-5.0, 5.0], "shoulder_pan": [-90.0, 90.5], "wrist_flex": [20.0, 97.0]}
+        assert list(back.joint_limits_deg) == ["wrist_roll", "shoulder_pan", "wrist_flex"]
+        TL.save(back)
+        assert TL.active().joint_limits_deg == back.joint_limits_deg and TL.active().contact == t.contact
+        # the arm that is built with the file has them
+        arm = Arm(bus=SimBus(), cfg=load_config()).open()
+        got = lim_deg(arm)
+        assert np.allclose(got["wrist_flex"], (20.0, 97.0)) and np.allclose(got["wrist_roll"], (-5.0, 5.0))
+        assert np.allclose(got["shoulder_pan"], (-90.0, 90.5))
+        assert fd.make_arm(True).tool.joint_limits_deg == back.joint_limits_deg
+
+
+def test_bad_joint_limits_are_an_error_never_no_limits():
+    bad = [{"wrist": [20, 97]}, {"gripper": [0, 50]}, {"wrist_flex": [97, 20]}, {"wrist_flex": [20, 20]}, {"wrist_flex": [20]},
+           {"wrist_flex": [20, 97, 100]}, {"wrist_flex": "20:97"}, {"wrist_flex": None}, {"wrist_flex": ["a", "b"]},
+           {"wrist_flex": [float("nan"), 97]}, {"wrist_flex": [-400, 97]}, {"wrist_flex": [20, 361]}, {"wrist_flex": 97},
+           {"wrist_flex": {"lo": 20, "hi": 97}}, [["wrist_flex", 20, 97]], "wrist_flex=20:97", 5,
+           {"wrist_flex": [20, 97], "elbow": [0, 1]}]
+    for v in bad:
+        msg = refused(lambda: TL.check_joint_limits(v), "joint limits")
+        assert ("unknown joint" in msg) == (isinstance(v, dict) and any(k not in ARM for k in v)), (v, msg)
+    assert TL.check_joint_limits(None) is None and TL.check_joint_limits({}) is None
+    assert TL.check_joint_limits({"wrist_flex": (20, 97)}) == {"wrist_flex": [20.0, 97.0]}
+    with tool_file(None):
+        good = brush().to_dict()
+        for v in bad:
+            d = dict(good, joint_limits_deg=v)
+            with open(TOOL_PATH, "w") as f:
+                f.write(json.dumps(d).replace("NaN", "null"))
+            # never read as a tool without limits: not by the file functions, not by an arm, not by a command
+            for fn in (TL.active, lambda: TL.active(sim=True), lambda: Arm(bus=SimBus(), cfg=load_config()), lambda: fd.make_arm(True)):
+                msg = refused(fn, "cannot be used", "fd tool detach")
+                assert "joint limits" in msg, (v, msg)
+            r, rc = fd_run(["--sim", "tool", "status"])
+            assert rc == 1 and r["ok"] is False and r["stage"] == "tool" and r["attached"] is None, (v, r)
+            assert "joint limits" in r["reason"], (v, r)
+            bus = RecBus()
+            r, rc = fd_run(["--sim", "ready"], bus)
+            assert rc == 1 and r["error"] == "SafetyError" and writes(bus) == (0, 0), (v, r)
+        TL.clear()
+        # the command line: refused, nothing stored
+        attach = ["--sim", "tool", "attach", "--name", "brush", "--tip", "0.0085,0.0007,0.0611", "--no-robot"]
+        for arg in ("wrist=20:97", "wrist_flex=97:20", "wrist_flex=20", "wrist_flex=a:b", "wrist_flex", "gripper=0:40",
+                    "wrist_flex=20:97:3"):
+            r, rc = fd_run(attach + ["--joint-limit", arg])
+            assert rc == 1 and r["error"] == "SafetyError" and not os.path.exists(TOOL_PATH), (arg, r)
+        TL.save(brush())
+        text = open(TOOL_PATH).read()
+        for arg in ("wrist=20:97", "wrist_flex=97:20", "elbow_flex=x:1"):
+            r, rc = fd_run(["--sim", "tool", "set", "--joint-limit", arg])
+            assert rc == 1 and r["error"] == "SafetyError" and open(TOOL_PATH).read() == text, (arg, r)
+    # a Tool made in code with limits the arm cannot apply: the arm says so, it does not drop them
+    for v, texts in (({"wrist": [20.0, 97.0]}, ("unknown joint", "wrist")), ({"wrist_flex": [97.0, 20.0]}, ("wrist_flex", "lo < hi")),
+                     ({"wrist_flex": "20:97"}, ("wrist_flex",)), ([20.0, 97.0], ("joint limits",))):
+        arm, bus = sim_arm(tool=brush(joint_limits_deg=v))
+        q = Arm(bus=SimBus(), cfg=load_config(), tool=None).open().ready_q()
+        for call in (arm.q_limits, lambda: arm.check_q(q), lambda: arm.solve(np.array([0.25, 0.0, 0.08]), 65.0, 0.0),
+                     lambda: arm.plan_tip_path([(np.array([0.25, 0.0, 0.08]), 65.0, 0.0)], q_start=q), lambda: skills.go_ready(arm)):
+            refused(call, *texts)
+        assert writes(bus) == (0, 0)
+    # limits that leave nothing of what the arm itself allows: an error that names the tool, the joint and the way out
+    for v, joint in (({"wrist_flex": [150.0, 170.0]}, "wrist_flex"), ({"shoulder_pan": [120.0, 140.0]}, "shoulder_pan"),
+                     ({"wrist_flex": [20.0, 97.0], "elbow_flex": [-200.0, -150.0]}, "elbow_flex")):
+        tool = brush(joint_limits_deg=v)
+        arm, bus = sim_arm(tool=tool)
+        msg = refused(arm.q_limits, "tool 'brush'", joint, "no pose would be left", f"fd tool set --joint-limit {joint}=LO:HI")
+        for call in (lambda: arm.check_q(np.zeros(5)), lambda: TL.rest_q(arm, tool), lambda: TL.ready_pose(arm, tool),
+                     lambda: skills.go_ready(arm), lambda: TL.rest(arm)):
+            assert refused(call) == msg or "no pose would be left" in refused(call)
+        assert writes(bus) == (0, 0) and TL.in_rest_pose(arm, tool)[0] is False
+        with tool_file(tool):                              # the commands still answer, and `tool set` can repair it
+            r, rc = fd_run(["--sim", "ready"])
+            assert rc == 1 and "no pose would be left" in r["message"], r
+            r, rc = fd_run(["--sim", "tool", "status"])
+            assert rc == 0 and r["tool"]["joint_limits_deg"] == v, r
+            r, rc = fd_run(["--sim", "tool", "set", "--joint-limit", "none"])
+            assert rc == 0 and TL.active().joint_limits_deg is None, r
+            r, rc = fd_run(["--sim", "ready"])
+            assert rc == 0, r
+
+
+def test_a_tool_file_without_joint_limits_behaves_as_before():
+    with tool_file(None):
+        plain = pen()
+        TL.save(plain)
+        d = json.load(open(TOOL_PATH))
+        assert d["joint_limits_deg"] is None
+        for variant in ("absent", None, {}):
+            dd = dict(d)
+            if variant == "absent":
+                del dd["joint_limits_deg"]                 # as every file written before 2026-11-13
+            else:
+                dd["joint_limits_deg"] = variant
+            with open(TOOL_PATH, "w") as f:
+                json.dump(dd, f)
+            t = TL.active()
+            assert t.joint_limits_deg is None and t.to_dict() == plain.to_dict(), variant
+            arm, _ = sim_arm(tool="active")
+            bare, _ = sim_arm(tool=None)
+            assert arm.q_limits() == bare.q_limits(), variant
+            assert np.array_equal(TL.rest_q(arm, t), TL.rest_q(arm, plain)) and np.array_equal(TL.ready_q(arm, t), TL.ready_q(arm, plain))
+            assert abs(TL.tip_height(arm, TL.rest_q(arm, t), t) - 0.05) < 2e-4
+        r, rc = fd_run(["--sim", "tool", "status"])
+        assert rc == 0 and "joint_limits_deg" not in r["tool"], r
+        r, rc = fd_run(["--sim", "ready"])
+        want = TL.ready_pose(sim_arm(tool=plain)[0], plain)
+        assert rc == 0 and r["standby_xyz"] == [0.2, 0.0, 0.12] == want["xyz"] and r["standby_pitch_deg"] == want["pitch"], r
+
+
+def test_q_limits_is_the_intersection_of_servo_soft_and_tool_limits():
+    cfg = load_config()
+    raw = SimBus().limits()
+    m, z = cfg["limit_margin_ticks"], cfg["zero_ticks"]
+    servo = {j: ((raw[j][0] + m - z[j]) / TPR, (raw[j][1] - m - z[j]) / TPR) for j in ARM}        # sign +1 on every joint
+    soft = {j: tuple(math.radians(v) for v in cfg["soft_limits_deg"][j]) for j in cfg["soft_limits_deg"]}
+    assert set(soft) == {"shoulder_pan", "wrist_roll"} and servo["shoulder_pan"][1] > soft["shoulder_pan"][1]
+
+    def want(tool_lim):
+        out = {}
+        for j in ARM:
+            lo, hi = servo[j]
+            for extra in (soft.get(j), tool_lim.get(j) and tuple(math.radians(v) for v in tool_lim[j])):
+                if extra:
+                    lo, hi = max(lo, extra[0]), min(hi, extra[1])
+            out[j] = (lo, hi)
+        return out
+
+    cases = [{}, BRUSH_LIMITS,
+             {"wrist_flex": [-170.0, 170.0], "wrist_roll": [-180.0, 180.0]},      # wider than servo and soft limits: no effect
+             {"shoulder_pan": [-120.0, 30.0]},                                    # one side from the tool, the other from the soft limit
+             {"shoulder_lift": [-150.0, 0.0], "elbow_flex": [0.0, 150.0]},        # one side from the tool, the other from the servo
+             {"wrist_roll": [100.0, 170.0]},                                      # the tool's lower end, the soft limit's upper end
+             {j: [-1.0, 1.0] for j in ARM}]
+    for tool_lim in cases:
+        arm, _ = sim_arm(tool=brush(joint_limits_deg=tool_lim or None))
+        got, exp = arm.q_limits(), want(tool_lim)
+        assert list(got) == list(ARM)
+        for j in ARM:
+            assert np.allclose(got[j], exp[j], atol=1e-12), (tool_lim, j, got[j], exp[j])
+            # never wider than without the tool
+            assert got[j][0] >= want({})[j][0] - 1e-12 and got[j][1] <= want({})[j][1] + 1e-12
+    bare, _ = sim_arm(tool=None)
+    assert all(np.allclose(bare.q_limits()[j], want({})[j], atol=1e-12) for j in ARM)
+    # the numbers of that morning
+    got = lim_deg(sim_arm(tool=brush())[0])
+    assert np.allclose(got["wrist_flex"], (20.0, 97.0)) and np.allclose(got["wrist_roll"], (-5.0, 5.0))
+    assert np.allclose(got["shoulder_pan"], (-100.0, 100.0)) and abs(got["elbow_flex"][1] - 85.43) < 0.01
+    # other soft limits, a joint whose servo counts the other way: still the intersection of the three
+    cfg2 = load_config()
+    cfg2["soft_limits_deg"] = {"wrist_flex": [-30, 60]}
+    cfg2["sign"]["wrist_flex"] = -1
+    arm2, _ = sim_arm(tool=brush(joint_limits_deg={"wrist_flex": [10.0, 80.0], "shoulder_pan": [-150.0, 150.0]}), cfg=cfg2)
+    a, b = sorted((-(raw["wrist_flex"][0] + m - z["wrist_flex"]) / TPR, -(raw["wrist_flex"][1] - m - z["wrist_flex"]) / TPR))
+    assert a < math.radians(-30) and b > math.radians(60)
+    assert np.allclose(arm2.q_limits()["wrist_flex"], (math.radians(10.0), math.radians(60.0)), atol=1e-12)
+    assert np.allclose(arm2.q_limits()["shoulder_pan"], servo["shoulder_pan"], atol=1e-12)      # (no soft limit on pan in cfg2)
+    # the limits are those of the tool that is on the arm NOW
+    arm, _ = sim_arm(tool=brush())
+    arm.tool = None
+    assert arm.q_limits() == bare.q_limits()
+    arm.tool = pen()
+    assert arm.q_limits() == bare.q_limits()
+
+
+def test_ik_plan_and_check_refuse_a_pose_beyond_the_tool_limit_and_name_the_joint():
+    arm, bus = sim_arm(tool=brush())
+    free, _ = sim_arm(tool=brush(joint_limits_deg=None))
+    # the same tip pose: fine without the limits (the wrist at 17.7 deg), refused with them
+    xyz = np.array([0.32, 0.0, 0.15])
+    q_low = free.solve(xyz, 10.0, 0.0)
+    assert abs(math.degrees(q_low[3]) - 17.7) < 0.2
+    msg = refused(lambda: arm.solve(xyz, 10.0, 0.0), "IK failed", "wrist_flex=17.7 deg outside [20.0, 97.0]")
+    assert "feasible pitch range" in msg                               # ... and it says which pitches the limits leave
+    q_roll = free.solve(np.array([0.25, 0.0, 0.05]), 65.0, 10.0)
+    refused(lambda: arm.solve(np.array([0.25, 0.0, 0.05]), 65.0, 10.0), "wrist_roll=10.0 deg outside [-5.0, 5.0]")
+    refused(lambda: arm.solve(np.array([0.25, 0.0, 0.05]), 65.0, -5.5), "wrist_roll=-5.5 deg outside [-5.0, 5.0]")
+    assert np.allclose(arm.solve(np.array([0.25, 0.0, 0.05]), 65.0, 5.0), free.solve(np.array([0.25, 0.0, 0.05]), 65.0, 5.0))
+    # a straight line that runs the wrist past 97 deg on its way: the bare limits allow it (101.9), the tool's do not
+    q0 = arm.solve(np.array([0.25, 0.0, 0.05]), 65.0, 0.0)
+    line = [(np.array([0.15, 0.0, 0.05]), 65.0, 0.0)]
+    wps = free.plan_tip_path(line, q_start=q0)
+    assert 97.0 < max(math.degrees(w[3]) for w in wps) < 103.0
+    refused(lambda: arm.plan_tip_path(line, q_start=q0), "IK failed", "wrist_flex=", "outside [20.0, 97.0]")
+    inside = arm.plan_tip_path([(np.array([0.28, 0.02, 0.07]), 65.0, 0.0)], q_start=q0)
+    assert max(outside_deg(arm, w) for w in inside) <= 1e-9
+    # check_q: the pose itself, with the joint, its value and the limits in the text
+    for q, text in ((q_low, "wrist_flex=17.7 deg outside limits [20.0, 97.0]"),
+                    (q_roll, "wrist_roll=10.0 deg outside limits [-5.0, 5.0]"), (wps[-1], "wrist_flex=")):
+        free.check_q(q)
+        msg = refused(lambda: arm.check_q(q, what="test pose"), "test pose", text)
+        refused(lambda: TL.check_pose(arm, arm.tool, q), text)
+    # a path through such a pose is refused before anything moves; the motion commands say the same
+    place(arm, q0)
+    arm.torque_on()
+    bus.sleep(0.6)
+    q_now = arm.read_q()
+    before, pos = writes(bus), dict(bus.pos)
+    for call in (lambda: arm.check_path([q_now, q_low], 20.0), lambda: arm.run_path([q_now, q_low], 20.0),
+                 lambda: arm.move_joints(q_roll, 20.0), lambda: arm.move_tip(xyz, 10.0, 0.0),
+                 lambda: arm.move_tip_path(line, 15.0)):
+        msg = refused(call)
+        assert ("wrist_flex" in msg or "wrist_roll" in msg) and "outside" in msg, msg
+    with tool_file(brush()):
+        for argv, joint in ((["check", "0.32", "0.0", "0.15", "--pitch", "10", "--roll", "0"], "wrist_flex"),
+                            (["tip", "0.32", "0.0", "0.15", "--pitch", "10", "--roll", "0"], "wrist_flex"),
+                            (["tip", "0.25", "0.0", "0.05", "--pitch", "65", "--roll", "10"], "wrist_roll"),
+                            (["joints", "wrist_flex=15"], "wrist_flex"), (["joints", "wrist_roll=-8"], "wrist_roll")):
+            r, rc = fd_run(["--sim"] + argv, bus)
+            text = json.dumps(r)
+            assert rc == 1 and r["ok"] is False and joint in text and "outside" in text, (argv, r)
+    assert writes(bus) == before and bus.pos == pos, "a refused pose moved the arm"
+    # just inside the limit it goes
+    r = arm.move_joints(np.array([*q_now[:3], math.radians(96.5), math.radians(4.5)]), 20.0)
+    assert not r["aborted"] and abs(math.degrees(arm.read_q()[3]) - 96.5) < 0.5
+
+
+def test_rest_pose_is_inside_the_tool_limits_or_refuses_cleanly():
+    found, refusals = 0, 0
+    sets = [BRUSH_LIMITS, {"wrist_flex": [20.0, 60.0]}, {"wrist_flex": [20.0, 40.0]}, {"wrist_flex": [-20.0, 30.0]},
+            {"shoulder_pan": [-30.0, 60.0]}, {"shoulder_lift": [-110.0, 60.0], "elbow_flex": [-90.0, 90.0]},
+            {"wrist_flex": [80.0, 97.0]}, {"wrist_flex": [60.0, 66.0]}, {"shoulder_lift": [-60.0, 60.0]}, {"elbow_flex": [-90.0, 60.0]},
+            {"wrist_roll": [10.0, 20.0]}, {"shoulder_pan": [30.0, 60.0]}]
+    for tip in (BRUSH_TIP, PEN_TIP, UNDER_TIP):
+        for lims in sets:
+            tool = brush(tip_offset=list(tip), joint_limits_deg=lims)
+            arm, bus = sim_arm(tool=tool)
+            try:
+                q = TL.rest_q(arm, tool)
+            except SafetyError as e:
+                # a clean refusal: it says that the arm cannot rest (or that the pan asked for is not allowed), names
+                # the limit that is in the way, and how to change it; and the arm did not move
+                refusals += 1
+                msg = str(e)
+                joint = next(j for j in lims if j in msg)
+                lo, hi = lims[joint]
+                assert f"[{lo:g}, {hi:g}]" in msg or f"{lo:g}..{hi:g}" in msg, (lims, msg)
+                if joint == "shoulder_pan":
+                    assert "rest pan" in msg and "outside the pan limits" in msg, msg
+                    q = TL.rest_q(arm, tool, pan_deg=45.0)            # ... and another base angle does it
+                    assert outside_deg(arm, q) <= 1e-9 and abs(math.degrees(q[0]) - 45.0) < 1e-9
+                else:
+                    assert "cannot rest" in msg and f"fd tool set with --joint-limit {joint}=LO:HI" in msg and "fd tool detach" in msg, msg
+                    # (round 3, T12: the range is the operator's to give, so that command stands in words; what is in
+                    # backticks works as it is typed)
+                    assert "`fd tool status`" in msg and "`fd tool set" not in msg, msg
+                    assert "(None)" not in msg and TL.in_rest_pose(arm, tool)[0] is False
+                    place(arm, TL.ready_q(arm, tool) if joint != "wrist_roll" else np.radians([0.0, -50.0, 20.0, 70.0, 12.0]))
+                    arm.torque_on()
+                    bus.sleep(0.6)
+                    before, pos = writes(bus), dict(bus.pos)
+                    refused(lambda: TL.rest(arm), "cannot rest")
+                    with tool_file(tool):
+                        r, rc = fd_run(["--sim", "tool", "rest"], bus)
+                    assert rc == 1 and r["stage"] == "plan" and r["moved"] is False and "cannot rest" in r["reason"], r
+                    assert writes(bus) == before and bus.pos == pos and arm.is_torqued()
+                continue
+            found += 1
+            assert outside_deg(arm, q) <= 1e-9, (tip, lims, np.degrees(q))
+            h = TL.check_pose(arm, tool, q, min_height=0.05 - 1e-6)
+            # 5 cm up, or as little higher as the tool's wrist limit forces the gripper to be raised
+            assert h < 0.0502 or abs(math.degrees(q[3]) - (lims["wrist_flex"][1] - math.degrees(0.005))) < 0.01, (tip, lims, h)
+            assert TL.in_rest_pose(arm, tool, q) == (True, "") and np.allclose(arm.rest_q(), q)
+            # the fold is the one the arm is known to rest in: shoulder and elbow on their stops, roll 0
+            assert np.allclose(np.degrees(q)[[1, 2, 4]], [-100.09, 85.14, 0.0], atol=0.02), np.degrees(q)
+    assert found == 3 * 6 and refusals == 3 * 6, (found, refusals)
+    # with the brush's limits the rest pose is the pose without them (the limits do not touch the fold)
+    arm, _ = sim_arm(tool=brush())
+    assert np.allclose(TL.rest_q(arm, arm.tool), TL.rest_q(arm, brush(joint_limits_deg=None)))
+    # a limit that takes the wrist's last degrees: the wrist is raised to the limit, the tip stands higher
+    tool = brush(joint_limits_deg={"wrist_flex": [20.0, 40.0]})
+    arm, _ = sim_arm(tool=tool)
+    q = TL.rest_q(arm, tool)
+    assert math.degrees(q[3]) <= 40.0 and TL.tip_height(arm, q, tool) > 0.05
+    # the limits a pose is judged by are those of the tool that is ASKED about, not of the one the arm carries
+    carrier, _ = sim_arm(tool=None)
+    for lims in sets:
+        tool = brush(joint_limits_deg=lims)
+        mine, _ = sim_arm(tool=tool)
+        for fn in (TL.rest_q, TL.ready_q, lambda a, t: TL.work_q(a, t, (0.25, 0.0), 0.02)[0]):
+            try:
+                want = fn(mine, tool)
+            except SafetyError as e:
+                assert refused(lambda: fn(carrier, tool)) == str(e), lims
+            else:
+                assert np.allclose(fn(carrier, tool), want), lims
+
+
+def test_ready_with_limits_that_exclude_the_standby_pose_is_a_refusal_with_a_next_step():
+    for lims, joint in (({"shoulder_pan": [30.0, 60.0]}, "shoulder_pan"), ({"wrist_roll": [10.0, 20.0]}, "wrist_roll"),
+                        ({"wrist_flex": [-100.0, -20.0]}, "wrist_flex"), ({"shoulder_lift": [20.0, 90.0]}, "shoulder_lift")):
+        tool = brush(joint_limits_deg=lims)
+        with tool_file(tool):
+            for start in ("resting", "holding"):
+                arm, bus = sim_arm(tool=tool)
+                q0 = np.radians([40.0, -100.0, 85.0, 42.0, 12.0 if joint == "wrist_roll" else 0.0])     # folded, as it was left
+                place(arm, q0, gripper=2061)
+                if start == "holding":
+                    arm.torque_on()
+                    bus.sleep(0.6)
+                before, pos, torque = writes(bus), dict(bus.pos), dict(bus.torque)
+                r, rc = fd_run(["--sim", "ready"], bus)
+                assert rc == 1 and r["ok"] is False and r["error"] == "SafetyError", (lims, r)
+                said = r.get("reason") or r["message"]
+                nxt = r.get("next") or r["message"]                       # (fd gives the text; a "next" key when it has one)
+                lo, hi = lims[joint]
+                assert "stand-by" in said and joint in said and f"[{lo:g}, {hi:g}]" in said and "brush" in said, said
+                assert f"{joint} {lo:g}..{hi:g} deg" in said and "tool's own joint limits" in said, said
+                assert "fd tool set with --joint-limit" in nxt and "none (remove them all)" in nxt and "`fd tool rest`" in nxt, nxt
+                assert "`fd tool status`" in nxt and "`fd tool set" not in nxt and "LO:HI`" not in nxt, nxt      # (round 3, T12)
+                assert writes(bus) == before and bus.pos == pos and bus.torque == torque, f"{lims} {start}: something moved"
+            arm, _ = sim_arm(tool=tool)
+            refused(lambda: TL.ready_pose(arm, tool), "stand-by", joint)
+            msg = refused(lambda: skills.go_ready(arm), "fd tool set and --joint-limit JOINT=LO:HI", "`--joint-limit none` removes them")
+            assert "`fd tool set" not in msg, msg
+    # limits that leave a stand-by pose at another pitch: the arm stands by there, inside them
+    for lims in ({"wrist_flex": [20.0, 60.0]}, {"wrist_flex": [20.0, 97.0], "wrist_roll": [-5.0, 5.0]}, {"elbow_flex": [-100.0, 30.0]},
+                 {"shoulder_pan": [-10.0, 60.0]}):
+        tool = brush(joint_limits_deg=lims)
+        with tool_file(tool):
+            arm, bus = sim_arm(tool=tool)
+            try:
+                q_start = TL.rest_q(arm, tool)
+            except SafetyError:                                # (limits that exclude the fold: from a pose over the table)
+                q_start = TL.work_q(arm, tool, (0.25, 0.0), 0.06)[0]
+            place(arm, q_start, gripper=2061)
+            pose = TL.ready_pose(arm, tool)
+            assert outside_deg(arm, pose["q"]) <= 1e-9, (lims, np.degrees(pose["q"]))
+            r, rc = fd_run(["--sim", "ready"], bus)
+            assert rc == 0 and r["ok"] and r["standby_xyz"] == pose["xyz"] and r["standby_pitch_deg"] == pose["pitch"], (lims, r)
+            assert max(outside_tool_deg(tool, q_of(p)) for p in bus.trace) < 0.4, lims
+            assert np.linalg.norm(K.fk(q_of(bus.pos), K.tool_offset(*BRUSH_TIP))[:3, 3] - np.array(pose["xyz"])) < 0.004
+    # a tip offset that puts the point out of reach is still told as that
+    pole = TL.Tool("pole", TL.offset_for(CFG, "along_fingers", 0.25), "along_fingers", 75.0, joint_limits_deg=dict(BRUSH_LIMITS))
+    arm, _ = sim_arm(tool=pole)
+    assert "Check the tip offset" in refused(lambda: TL.ready_pose(arm, pole), "stand-by")
+
+
+def test_free_moves_keep_every_waypoint_inside_the_tool_limits():
+    tool = brush()
+    arm0, _ = sim_arm(tool=tool)
+    rest, ready = TL.rest_q(arm0, tool), TL.ready_q(arm0, tool)
+    starts = {"rest": rest, "ready": ready, "aside": np.radians([43.0, -20.0, 10.0, 63.0, 0.0]),
+              "photo pose": np.radians([-89.2, -61.7, 36.2, 85.6, 0.0])}
+    for (x, y) in ((0.20, -0.08), (0.25, 0.0), (0.30, 0.08), (0.17, 0.02), (0.33, -0.05)):
+        for h in (0.002, 0.012, 0.03, 0.065):
+            starts[f"({x}, {y}) h={h}"] = TL.work_q(arm0, tool, (x, y), h)[0]
+    assert all(outside_deg(arm0, q) <= 1e-9 for q in starts.values())
+    plans = lifted = 0
+    vias = set()
+    for label, q in starts.items():
+        for goal, q_to in (("ready", ready), ("rest", rest), ("aside", starts["aside"])):
+            if np.allclose(q, q_to):
+                continue
+            plan = TL.plan_free_move(arm0, tool, q, q_to)
+            plans += 1
+            lifted += bool(plan["lift"])
+            vias.add(plan["via"])
+            # every waypoint, and every 1.5 deg between two of them, inside the limits
+            for chain in ([plan["lift"]] if plan["lift"] else []) + [plan["path"]]:
+                for a, b in zip(chain, chain[1:]):
+                    n = max(1, int(math.ceil(math.degrees(float(np.max(np.abs(b - a)))) / 1.5)))
+                    worst = max(outside_deg(arm0, a + (b - a) * k / n) for k in range(n + 1))
+                    assert worst <= 1e-9, (label, goal, plan["via"], worst)
+            assert np.allclose(plan["path"][-1], q_to) and np.allclose((plan["lift"] or plan["path"])[0], q)
+    assert plans >= 60 and lifted >= 20 and "direct" in vias, (plans, lifted, vias)
+    # ... and so does the arm when it runs them: every pose it passes through (0.4 deg for the tracking)
+    ran = 0
+    for label in ("rest", "photo pose", "(0.2, -0.08) h=0.002", "(0.3, 0.08) h=0.012", "(0.17, 0.02) h=0.002", "(0.33, -0.05) h=0.03"):
+        for q_to in (ready, rest):
+            arm, bus = sim_arm(tool=tool, q=starts[label], torque=True)
+            h0 = TL.tip_height(arm, arm.read_q(), tool)
+            r = TL.free_move(arm, q_to, 25.0)
+            ran += 1
+            worst = max(outside_tool_deg(tool, q_of(p)) for p in bus.trace)
+            assert worst < 0.4 and max(outside_deg(arm, q_of(p)) for p in bus.trace) < 1.2, (label, r["via"], worst)
+            hs = heights(arm, bus, tool)
+            k = next(i for i, h in enumerate(hs) if h >= TL.MIN_FREE_HEIGHT + TL.PLAN_MARGIN)
+            assert min(hs[:k + 1]) >= h0 - 0.0015 and min(hs[k:]) >= TL.MIN_FREE_HEIGHT, (label, min(hs), h0)
+            assert float(np.max(np.abs(arm.read_q() - q_to))) < math.radians(1.5), label
+            assert r["lifted_first"] == (h0 < TL.LIFT_HEIGHT - 0.002) and ("lift_via" in r) == r["lifted_first"], (label, r)
+    assert ran == 12
+    # something in the direct way (a 24 mm cube around the tip's direct path): the detour keeps to the limits as well
+    cfg = load_config()
+    mid = K.fk(rest + (ready - rest) * 0.5, K.tool_offset(*BRUSH_TIP))[:3, 3]
+    cfg["keepouts"]["post"] = [v for c in mid for v in (float(c) - 0.012, float(c) + 0.012)]
+    arm, bus = sim_arm(tool=tool, cfg=cfg)
+    place(arm, rest)
+    plan = TL.plan_free_move(arm, tool, arm.read_q(), ready)
+    assert plan["via"] != "direct" and len(plan["path"]) >= 3, plan["via"]
+    for a, b in zip(plan["path"], plan["path"][1:]):
+        n = max(1, int(math.ceil(math.degrees(float(np.max(np.abs(b - a)))) / 1.5)))
+        assert max(outside_tool_deg(tool, a + (b - a) * k / n) for k in range(n + 1)) <= 1e-9, plan["via"]
+    arm.torque_on()
+    bus.sleep(0.6)
+    bus.trace.clear()
+    r = TL.free_move(arm, ready, 25.0)
+    assert r["via"] == plan["via"] and max(outside_tool_deg(tool, q_of(p)) for p in bus.trace) < 0.4
+    assert max(outside_deg(arm, q_of(p)) for p in bus.trace) < 1.2
+
+
+def test_a_start_outside_a_tool_limit_may_come_back_inside_and_not_go_further_out():
+    """2026-11-13 afternoon: the arm had been moved by hand, wrist_roll stood at +15.6 deg under a limit of +-5.
+    The lift refused (no IK solution keeps a roll the limits exclude) and the brush was raised by the elbow
+    joint from a scratch script."""
+    tool = brush()
+    arm0, _ = sim_arm(tool=tool)
+    cases = 0
+    for xy, h in (((0.25, 0.0), 0.004), ((0.30, -0.10), 0.010), ((0.18, 0.05), 0.020)):
+        q_in = TL.work_q(arm0, tool, xy, h)[0]
+        for roll in (15.6, -12.0):
+            cases += 1
+            q0 = q_in.copy()
+            q0[4] = math.radians(roll)
+            assert outside_deg(arm0, q0) > 6.9
+            # the checks: back inside is allowed, staying is allowed, further out is not; without the start nothing is
+            back, further = q0.copy(), q0.copy()
+            back[4], further[4] = math.radians(roll * 0.5), math.radians(roll * 1.1)
+            arm0.check_q(back, q_start=q0)
+            arm0.check_q(q0, q_start=q0)
+            refused(lambda: arm0.check_q(further, q_start=q0), "wrist_roll", "outside limits")
+            refused(lambda: arm0.check_q(back), "wrist_roll")
+            refused(lambda: arm0.check_q(q0), "wrist_roll")
+            # the lift works from there: straight up, the roll staying where the hand left it
+            arm, bus = sim_arm(tool=tool, q=q0, torque=True)
+            p0 = K.fk(arm.read_q(), arm.tip_tool())[:3, 3]
+            h0 = TL.tip_height(arm, arm.read_q(), tool)
+            r = TL.lift(arm)
+            p1 = K.fk(arm.read_q(), arm.tip_tool())[:3, 3]
+            assert r["lifted"] and r["via"] == "straight up" and abs(r["tip_height_m"] - TL.LIFT_HEIGHT) < 0.003, r
+            assert np.linalg.norm(p1[:2] - p0[:2]) < 0.004, (p0, p1)
+            rolls = [math.degrees(q_of(p)[4]) for p in bus.trace]
+            assert max(abs(v - roll) for v in rolls) < 0.2, (roll, min(rolls), max(rolls))
+            hs = heights(arm, bus, tool)
+            assert min(hs) >= h0 - 0.0015 and all(b >= a - 0.0015 for a, b in zip(hs, hs[1:]))
+            # and the free move after it brings the roll back inside, never further out
+            for q_to, name in ((TL.ready_q(arm, tool), "ready"), (TL.rest_q(arm, tool), "rest")):
+                arm, bus = sim_arm(tool=tool, q=q0, torque=True)
+                r = skills.go_ready(arm) if name == "ready" else TL.rest(arm)
+                rolls = [math.degrees(q_of(p)[4]) for p in bus.trace]
+                assert max(abs(v) for v in rolls) <= abs(roll) + 0.2, (name, roll, max(rolls), min(rolls))       # never further out
+                assert all(v * roll >= -0.5 * abs(roll) for v in rolls) and abs(rolls[-1]) < 0.5, (name, rolls[-1])
+                for i, j in enumerate(ARM[:4]):                       # the joints that were inside stay inside
+                    lo, hi = arm.q_limits()[j]
+                    vals = [q_of(p)[i] for p in bus.trace]
+                    assert min(vals) >= lo - math.radians(0.4) and max(vals) <= hi + math.radians(0.4), (name, j)
+                assert (r.get("lifted_first") if name == "ready" else r["ok"]), r
+    assert cases == 6
+    # by hand: `fd joints` may turn the roll back, not further
+    with tool_file(tool):
+        q0 = TL.work_q(arm0, tool, (0.25, 0.0), 0.03)[0]
+        q0[4] = math.radians(15.6)
+        arm, bus = sim_arm(tool=tool, q=q0, torque=True)
+        before = writes(bus)
+        r, rc = fd_run(["--sim", "joints", "wrist_roll=20"], bus)
+        assert rc == 1 and "wrist_roll" in r["message"] and "outside limits" in r["message"] and writes(bus) == before, r
+        r, rc = fd_run(["--sim", "joints", "wrist_roll=4.5"], bus)
+        assert rc == 0 and abs(math.degrees(q_of(bus.pos)[4]) - 4.5) < 0.3, r
+        r, rc = fd_run(["--sim", "joints", "wrist_roll=8"], bus)        # inside now: the limit holds again
+        assert rc == 1 and "wrist_roll" in r["message"], r
+    # the wrist bent past its limit (101 deg under a limit of 97), where the tip cannot go straight up: one joint alone
+    # raises it, as the elbow did that afternoon. Where that arc carries the tip 4 cm sideways or less the lift takes
+    # it; the wrist is never bent further
+    for xy, h in (((0.30, -0.10), 0.010), ((0.28, 0.05), 0.012)):
+        q0 = TL.work_q(arm0, tool, xy, h)[0]
+        q0[3] = math.radians(101.0)
+        arm, bus = sim_arm(tool=tool, q=q0, torque=True)
+        h0 = TL.tip_height(arm, arm.read_q(), tool)
+        p0 = K.fk(arm.read_q(), arm.tip_tool())[:3, 3]
+        assert h0 < TL.LIFT_HEIGHT - 0.01
+        r = TL.lift(arm)
+        p1 = K.fk(arm.read_q(), arm.tip_tool())[:3, 3]
+        assert r["lifted"] and r["via"].startswith("shoulder_lift alone") and "sideways" in r["via"], r
+        assert abs(r["tip_height_m"] - TL.LIFT_HEIGHT) < 0.004 and np.linalg.norm(p1[:2] - p0[:2]) <= TL.LIFT_ARC_MAX_M, (r, p0, p1)
+        hs = heights(arm, bus, tool)
+        assert min(hs) >= h0 - 0.0015 and max(math.degrees(q_of(p)[3]) for p in bus.trace) <= 101.2
+        moved = np.degrees(np.abs(q_of(bus.pos) - q0))
+        assert moved[1] > 5.0 and max(moved[[0, 3, 4]]) < 0.3 and moved[2] < 1.3, moved       # (1 deg: the simulated elbow's droop)
+        r = skills.go_ready(arm)
+        wr = [math.degrees(q_of(p)[3]) for p in bus.trace]
+        assert max(wr) <= 101.2 and wr[-1] <= 97.0, (max(wr), wr[-1])
+    # ... and where the arc is longer (7 cm here), it is too much to be taken unasked: the refusal says exactly which
+    # joint move raises the tip, and which brings the wrist back inside; the move it names works
+    for xy, h in (((0.25, 0.0), 0.004), ((0.22, 0.06), 0.006)):
+        q0 = TL.work_q(arm0, tool, xy, h)[0]
+        q0[3] = math.radians(101.0)
+        arm, bus = sim_arm(tool=tool, q=q0, torque=True)
+        h0 = TL.tip_height(arm, arm.read_q(), tool)
+        before, pos = writes(bus), dict(bus.pos)
+        msg = refused(lambda: TL.lift(arm), "cannot be lifted straight up", "Nothing moved", "One joint alone would raise it to 35 mm",
+                      "sideways", "wrist_flex stands at 101.0 deg, outside the limit [20, 97] deg of tool 'brush'", "not further out")
+        # (the wrist alone may turn back where that keeps the tip off the table; where not, the tip has to come up first)
+        assert ("`fd joints wrist_flex=96.5` turns it back inside (checked" in msg) == (xy == (0.25, 0.0)), msg
+        assert ("raise the tip first" in msg and "below floor limit" in msg) == (xy != (0.25, 0.0)), msg
+        assert writes(bus) == before and bus.pos == pos
+        cmd = re.search(r"`fd joints (elbow_flex=[-+][0-9.]+) --rel`", msg)
+        side = re.search(r"carries the tip (\d+) mm sideways", msg)
+        assert cmd and side and int(side.group(1)) > TL.LIFT_ARC_MAX_M * 1000, msg
+        with tool_file(tool):
+            r, rc = fd_run(["--sim", "joints", cmd.group(1), "--rel", "--speed", "12"], bus)
+        assert rc == 0, r
+        hs = heights(arm, bus, tool)
+        assert abs(TL.tip_height(arm, arm.read_q(), tool) - TL.LIFT_HEIGHT) < 0.004 and min(hs) >= h0 - 0.0015, (hs[-1], min(hs))
+        assert max(math.degrees(q_of(p)[3]) for p in bus.trace) <= 101.2
+        moved = np.degrees(np.abs(q_of(bus.pos) - q0))
+        assert moved[2] > 5.0 and max(moved[[0, 1, 3, 4]]) < 1.3, moved          # (1 deg: the simulated shoulder's droop)
+        r = skills.go_ready(arm)
+        wr = [math.degrees(q_of(p)[3]) for p in bus.trace]
+        assert max(wr) <= 101.2 and wr[-1] <= 97.0 and r["tool"] == "brush", (max(wr), wr[-1])
+    # when nothing lifts it: the refusal names the joint that is outside and the move that frees it, and that move works
+    cfg = load_config()
+    q0 = TL.work_q(arm0, tool, (0.25, 0.0), 0.012)[0]
+    q0[4] = math.radians(15.6)
+    tip0 = K.fk(q0, K.tool_offset(*BRUSH_TIP))[:3, 3]
+    cfg["keepouts"]["shelf"] = [0.0, 0.5, -0.3, 0.3, float(tip0[2]) + 0.006, float(tip0[2]) + 0.012]      # a slab just over the tip
+    arm, bus = sim_arm(tool=tool, q=q0, torque=True, cfg=cfg)
+    before, pos = writes(bus), dict(bus.pos)
+    msg = refused(lambda: TL.lift(arm), "cannot be lifted", "shelf", "Nothing moved", "wrist_roll stands at 15.6 deg",
+                  "outside the limit [-5, 5] deg of tool 'brush'", "not further out", "`fd joints wrist_roll=4.5`", "checked")
+    assert refused(lambda: TL.plan_free_move(arm, tool, arm.read_q(), TL.ready_q(arm, tool))) == msg
+    assert writes(bus) == before and bus.pos == pos
+    with tool_file(tool):
+        r, rc = fd_run(["--sim", "joints", "wrist_roll=4.5"], bus, cfg=cfg)
+    assert rc == 0 and abs(math.degrees(q_of(bus.pos)[4]) - 4.5) < 0.3, r
+    assert TL.tip_height(arm, arm.read_q(), tool) > 0.0, "the freeing move put the tip into the table"
+    # a pose inside the limits keeps the old advice
+    q0 = TL.work_q(arm0, tool, (0.25, 0.0), 0.012)[0]
+    arm, bus = sim_arm(tool=tool, q=q0, torque=True, cfg=cfg)
+    msg = refused(lambda: TL.lift(arm), "cannot be lifted", "fd tip 0 0 0.01 --rel", "fd torque off --force")
+    assert "fd joints" not in msg
+
+
+def test_tools_with_the_tip_beside_and_under_the_fingers_stay_above_the_table():
+    """The thin brush of 2026-11-13: taped to the opened moving jaw its tip stood 9 cm beside the finger line
+    (mount "other"); with the jaw closed it lay under the fingers. Rest pose, lifts and free moves must keep
+    the tip of either above the table."""
+    for name, tip in (("beside", SIDE_TIP), ("under", UNDER_TIP)):
+        for lims in (None, BRUSH_LIMITS):
+            tool = TL.Tool(name=name, tip_offset=list(tip), mount="other", pitch_deg=65.0, joint_limits_deg=lims)
+            arm0, _ = sim_arm(tool=tool)
+            # the rest pose: tip 5 cm up, nothing of the tool under the floor line, inside the limits, the fold as ever
+            q_rest = TL.rest_q(arm0, tool)
+            assert abs(TL.tip_height(arm0, q_rest, tool) - 0.05) < 2e-4 and outside_deg(arm0, q_rest) <= 1e-9, (name, lims)
+            assert float(TL.body_points(arm0, q_rest, tool)[:, 2].min()) > TABLE_Z + 0.02
+            assert np.allclose(np.degrees(q_rest)[[1, 2, 4]], [-100.09, 85.14, 0.0], atol=0.02)
+            pose = TL.ready_pose(arm0, tool)
+            assert TL.tip_height(arm0, pose["q"], tool) > 0.11 and outside_deg(arm0, pose["q"]) <= 1e-9
+            with tool_file(tool):
+                # stand-by -> rest -> stand-by through the commands: the tip never under 2 cm, the torque off at rest
+                arm, bus = sim_arm(tool=tool)
+                place(arm, q_rest, gripper=2576)
+                r, rc = fd_run(["--sim", "ready"], bus)
+                assert rc == 0 and r["ok"] and np.allclose(r["tool_tip_xyz"], pose["xyz"], atol=0.004), (name, r)
+                r, rc = fd_run(["--sim", "tool", "rest"], bus)
+                assert rc == 0 and r["ok"] and r["torque"] == "off" and 40.0 <= r["tip_height_mm"] <= 60.0, (name, r)
+                assert min(heights(arm, bus, tool)) >= TL.MIN_FREE_HEIGHT, (name, min(heights(arm, bus, tool)))
+                assert all(v == 2576 for v in gripper_goals(bus)), "the gripper got a goal"
+            # low over the paper at several places: lifted without going down, then to the stand-by pose and to rest
+            done = 0
+            for xy in ((0.25, 0.0), (0.20, -0.08), (0.30, 0.08), (0.22, 0.10), (0.17, 0.0), (0.33, 0.0)):
+                for h in (0.003, 0.012):
+                    try:
+                        q_low = TL.work_q(arm0, tool, xy, h)[0]
+                        TL.check_pose(arm0, tool, q_low, what="work pose")
+                    except SafetyError:
+                        continue                             # (not a place this tool can work at)
+                    done += 1
+                    arm, bus = sim_arm(tool=tool, q=q_low, torque=True)
+                    h0 = TL.tip_height(arm, arm.read_q(), tool)
+                    r = TL.lift(arm)
+                    hs = heights(arm, bus, tool)
+                    assert r["lifted"] and abs(r["tip_height_m"] - TL.LIFT_HEIGHT) < 0.004, (name, xy, h, r)
+                    assert min(hs) >= h0 - 0.0015, (name, xy, h, r["via"], min(hs), h0)
+                    assert max(outside_tool_deg(tool, q_of(p)) for p in bus.trace) < 0.4, (name, xy, r["via"])
+                    for goal in ("ready", "rest"):
+                        arm, bus = sim_arm(tool=tool, q=q_low, torque=True)
+                        h0 = TL.tip_height(arm, arm.read_q(), tool)
+                        r = skills.go_ready(arm) if goal == "ready" else TL.rest(arm)
+                        hs = heights(arm, bus, tool)
+                        k = next(i for i, v in enumerate(hs) if v >= TL.MIN_FREE_HEIGHT + TL.PLAN_MARGIN)
+                        assert min(hs[:k + 1]) >= h0 - 0.0015 and min(hs[k:]) >= TL.MIN_FREE_HEIGHT, (name, xy, h, goal, min(hs))
+                        assert (r["lifted_first"] if goal == "ready" else r["ok"]), (name, xy, goal, r)
+                        # the fingers and the tool's body stay off the table too
+                        low = min(float(TL.body_points(arm, q_of(p), tool)[:, 2].min()) for p in bus.trace[k:])
+                        assert low > TABLE_Z + 0.004, (name, xy, goal, low)
+            assert done >= 6, (name, lims, done)
+    # where the tip cannot rise straight up (the tool beside the fingers, close to the base, the wrist at its
+    # limit), the lift is done by one joint, and says so
+    tool = TL.Tool(name="beside", tip_offset=list(SIDE_TIP), mount="other", pitch_deg=65.0, joint_limits_deg=dict(BRUSH_LIMITS))
+    arm0, _ = sim_arm(tool=tool)
+    q_low = TL.work_q(arm0, tool, (0.20, -0.08), 0.012)[0]
+    refused(lambda: arm0.plan_tip_path([(K.fk(q_low, K.tool_offset(*SIDE_TIP))[:3, 3] + [0.0, 0.0, 0.025], None, None)], q_start=q_low),
+            "wrist_flex", "outside [20.0, 97.0]")
+    wps, via = TL._lift_plan(arm0, tool, q_low)
+    assert via.endswith("sideways)") and ("elbow_flex alone" in via or "shoulder_lift alone" in via), via
+    assert int(re.search(r"moves (\d+) mm sideways", via).group(1)) <= TL.LIFT_ARC_MAX_M * 1000, via
+    assert TL.lift_path(arm0, tool, q_low)[-1].tolist() == wps[-1].tolist()
+    arm, bus = sim_arm(tool=tool, q=q_low, torque=True)
+    p0 = K.fk(arm.read_q(), arm.tip_tool())[:3, 3]
+    r = TL.lift(arm)
+    p1 = K.fk(arm.read_q(), arm.tip_tool())[:3, 3]
+    assert r["via"].split(" (")[0] == via.split(" (")[0] and np.linalg.norm(p1[:2] - p0[:2]) <= TL.LIFT_ARC_MAX_M, (r, p0, p1)
+
+
+def test_fd_tool_attach_set_status_store_remove_and_show_joint_limits():
+    with tool_file(None):
+        bus = RecBus()
+        bus.pos["gripper"] = bus.goal["gripper"] = 2054.0
+        r, rc = fd_run(["--sim", "tool", "attach", "--name", "brush", "--tip", "0.0085,0.0007,0.0611", "--pitch", "65",
+                        "--joint-limit", "wrist_flex=20:97", "--joint-limit", "wrist_roll=-5:5", "--dry"], bus)
+        assert rc == 0 and r["stage"] == "planned" and r["tool"]["joint_limits_deg"] == BRUSH_LIMITS and not os.path.exists(TOOL_PATH), r
+        r, rc = fd_run(["--sim", "tool", "attach", "--name", "brush", "--tip", "0.0085,0.0007,0.0611", "--pitch", "65",
+                        "--joint-limit", "wrist_flex=20:97", "--joint-limit", "wrist_roll=-5:5"], bus)
+        assert rc == 0 and r["stage"] == "attached" and r["tool"]["joint_limits_deg"] == BRUSH_LIMITS, r
+        assert json.load(open(TOOL_PATH))["joint_limits_deg"] == BRUSH_LIMITS and TL.active().joint_limits_deg == BRUSH_LIMITS
+        # what attach shows of the arm is computed WITH the limits (the stand-by pose leans the brush back to keep the wrist under 97)
+        arm, _ = sim_arm(tool=TL.active())
+        assert r["arm"]["standby"]["q_deg"] == [round(v, 1) for v in np.degrees(TL.ready_q(arm, arm.tool))], r["arm"]
+        assert r["arm"]["standby"]["q_deg"][3] <= 97.0 and r["arm"]["rest"]["tip_height_mm"] == 50.0, r["arm"]
+        r, rc = fd_run(["--sim", "tool", "status"])
+        assert rc == 0 and r["attached"] and r["tool"]["joint_limits_deg"] == BRUSH_LIMITS, r
+        # a measured contact plane and map: changing ONLY the limits keeps them
+        t = TL.active()
+        t.contact = {"x0": 0.24, "y0": 0.0, "a": -0.0015, "bx": 0.0, "by": 0.0, "rms_mm": 0.2, "points": []}
+        t.corr_map = {"centre": [0.22, 0.0], "kind": "affine", "coef": [[0, 0], [1, 0], [0, 1]], "rms_mm": 1.0, "max_mm": 2.0, "n": 9}
+        t.calibrated = {"tip": {"at": "x"}, "contact": {"at": "x"}, "map": {"at": "x"}}
+        t.region = [0.17, -0.06, 0.31, 0.07]
+        TL.save(t)
+        kept = {k: json.load(open(TOOL_PATH))[k] for k in ("contact", "corr_map", "calibrated", "region", "tip_offset", "pitch_deg",
+                                                             "gripper_raw", "attached_at")}
+
+        def same_but_limits(limits):
+            d = json.load(open(TOOL_PATH))
+            assert {k: d[k] for k in kept} == kept and d["joint_limits_deg"] == limits, d
+
+        r, rc = fd_run(["--sim", "tool", "set", "--joint-limit", "wrist_flex=25:90", "--dry"], bus)
+        assert rc == 0 and r["changed"] == ["joint_limits_deg"] and r["saved"] is False and r["calibration_dropped"] is False, r
+        same_but_limits(BRUSH_LIMITS)
+        r, rc = fd_run(["--sim", "tool", "set", "--joint-limit", "wrist_flex=25:90"], bus)
+        assert rc == 0 and r["changed"] == ["joint_limits_deg"] and r["saved"] and r["calibration_dropped"] is False, r
+        assert r["tool"]["joint_limits_deg"] == dict(BRUSH_LIMITS, wrist_flex=[25.0, 90.0]) and r["before"]["joint_limits_deg"] == BRUSH_LIMITS, r
+        assert r["tool"]["calibrated"] == {"tip": True, "contact": True, "map": True} and "fd tool status" in r["next"], r
+        same_but_limits(dict(BRUSH_LIMITS, wrist_flex=[25.0, 90.0]))     # (the joint that is named changes, wrist_roll keeps its limit)
+        r, rc = fd_run(["--sim", "tool", "set", "--joint-limit", "wrist_flex=25:90"], bus)
+        assert rc == 0 and r["changed"] == [] and r["saved"] is False, r
+        r, rc = fd_run(["--sim", "tool", "set", "--joint-limit", "wrist_flex=20:97", "--joint-limit", "wrist_roll=-5:5",
+                        "--joint-limit", "shoulder_pan=-95:95", "--note", "handle taped lower"], bus)
+        assert rc == 0 and r["changed"] == ["joint_limits_deg", "notes"] and not r["calibration_dropped"], r
+        same_but_limits(dict(BRUSH_LIMITS, shoulder_pan=[-95.0, 95.0]))
+        r, rc = fd_run(["--sim", "tool", "status"])
+        assert r["tool"]["joint_limits_deg"] == dict(BRUSH_LIMITS, shoulder_pan=[-95.0, 95.0]) and "calibrated" in r["next"], r
+        # none: removed from the file's limits and from what status shows; the calibration is still there
+        r, rc = fd_run(["--sim", "tool", "set", "--joint-limit", "none"], bus)
+        assert rc == 0 and r["changed"] == ["joint_limits_deg"] and "joint_limits_deg" not in r["tool"], r
+        assert not r["calibration_dropped"], r
+        same_but_limits(None)
+        bare = Arm(bus=SimBus(), cfg=load_config(), tool=None).open()
+        assert TL.active().joint_limits_deg is None and fd.make_arm(True).open().q_limits() == bare.q_limits()
+        r, rc = fd_run(["--sim", "tool", "status"])
+        assert rc == 0 and "joint_limits_deg" not in r["tool"], r
+        assert r["tool"]["calibrated"] == {"tip": True, "contact": True, "map": True}, r
+        r, rc = fd_run(["--sim", "tool", "set", "--joint-limit", "none"], bus)
+        assert rc == 0 and r["changed"] == [], r
+        # a new tip together with new limits: the tip is what drops the calibration
+        r, rc = fd_run(["--sim", "tool", "set", "--tip", "0.009,0.001,0.062", "--joint-limit", "wrist_flex=20:97"], bus)
+        assert rc == 0 and r["changed"] == ["tip_offset", "joint_limits_deg"] and r["calibration_dropped"], r
+        assert TL.active().contact is None and TL.active().joint_limits_deg == {"wrist_flex": [20.0, 97.0]}
+        assert writes(bus) == (0, 0), "attach / set / status only look at the arm"
+        # the arm of the next command moves inside them
+        r, rc = fd_run(["--sim", "ready"])
+        assert rc == 0 and r["q_deg"]["wrist_flex"] <= 97.3, r
+
+
 # ----------------------------------------------------------------------------- simulation start, real files
 def test_simulated_arm_starts_in_the_tool_rest_pose():
     with tool_file(None):
@@ -1056,7 +1846,276 @@ def test_simulated_arm_starts_in_the_tool_rest_pose():
         assert rc == 1 and r["stage"] == "tool", r
 
 
-def test_the_real_tool_files_were_never_touched():
+# ----------------------------------------------------------------------------- review of 2026-11-13 (added tests)
+def test_a_simulated_copy_follows_the_real_tool_until_the_real_tool_changes():
+    """Review finding 32. A simulated command that changes the tool the simulation mirrors (`fd --sim tool set`)
+    stores a copy of the real tool as the simulated tool. That copy used to be the simulated tool for good: the
+    real tool could be changed or replaced, `fd --sim` went on with the old one. Now the copy is marked as one and
+    is read only while the real tool file is what it was copied from; a tool attached IN simulation is no copy and
+    stays until `fd --sim tool detach`."""
+    real, simf = os.path.join(_TMP, "copy_real_tool.json"), os.path.join(_TMP, "copy_sim_tool.json")
+    saved = (TL.TOOL_FILE, TL.SIM_TOOL_FILE, os.environ.pop("FD_TOOL"))
+    TL.TOOL_FILE, TL.SIM_TOOL_FILE = real, simf
+    try:
+        TL.save(pen(name="real_pen", attached_at="2026-11-12T03:00:00"))
+        real_text = open(real).read()
+        assert TL.sim_tool_state() == {"simulated_tool": False, "file": real, "copy_of_real": False, "dropped": None, "note": None}
+        # a simulated change of the mirrored tool: a copy, marked with what it is a copy of; the real file is as it was
+        r, rc = fd_run(["--sim", "tool", "set", "--pitch", "70"])
+        assert rc == 0 and TL.active(sim=True).pitch_deg == 70.0 and TL.active().pitch_deg == 75.0 and open(real).read() == real_text, r
+        mark = json.load(open(simf))[TL.SIM_COPY_KEY]
+        assert (mark["file"], mark["name"], mark["attached_at"]) == (real, "real_pen", "2026-11-12T03:00:00") and mark["sha1"], mark
+        st = TL.sim_tool_state()
+        assert st["simulated_tool"] and st["copy_of_real"] and st["file"] == simf and st["dropped"] is None, st
+        assert "copy of the real tool" in st["note"] and "fd --sim tool detach" in st["note"], st["note"]
+        assert fd.make_arm(True).tool.pitch_deg == 70.0
+        # renamed in simulation: still a copy of the real pen (the mark says of what, not the copy's own name)
+        r, rc = fd_run(["--sim", "tool", "set", "--name", "renamed"])
+        assert rc == 0 and TL.active(sim=True).name == "renamed" and json.load(open(simf))[TL.SIM_COPY_KEY] == mark, r
+        # the real tool file is written again with the same content: nothing changed, the copy holds
+        TL.save(TL.active())
+        assert open(real).read() == real_text and TL.active(sim=True).name == "renamed"
+        # the real tool CHANGES: the copy is left behind (not read, not deleted), the simulation mirrors the real tool
+        t = TL.active()
+        t.notes.append("the tape was renewed")
+        TL.save(t)
+        got = TL.active(sim=True)
+        assert (got.name, got.pitch_deg, got.notes) == ("real_pen", 75.0, ["the tape was renewed"]) and TL.source(sim=True) == real
+        assert os.path.exists(simf) and fd.make_arm(True).tool.name == "real_pen"
+        st = TL.sim_tool_state()
+        assert not st["simulated_tool"] and st["file"] == real and st["dropped"]["file"] == simf, st
+        assert "copy of the real tool 'real_pen'" in st["dropped"]["why"] and "mirrors the real tool again" in st["note"], st
+        r, rc = fd_run(["--sim", "tool", "status"])
+        assert rc == 0 and r["tool"]["name"] == "real_pen" and r["tool"]["pitch_deg"] == 75.0 and r["file"] == real, r
+        # a new simulated change: a new copy, of the real tool as it is now
+        r, rc = fd_run(["--sim", "tool", "set", "--pitch", "68"])
+        now = json.load(open(simf))
+        assert rc == 0 and now["pitch_deg"] == 68.0 and now["notes"] == ["the tape was renewed"] and now[TL.SIM_COPY_KEY] != mark, now
+        assert TL.sim_tool_state()["dropped"] is None and TL.active(sim=True).pitch_deg == 68.0
+        # the real tool is registered anew (another name, another attach time): the copy of the old one is left behind
+        TL.save(pen(name="pen3", attached_at="2026-11-14T09:00:00"))
+        assert TL.active(sim=True).name == "pen3" and "the real tool is now 'pen3'" in TL.sim_tool_state()["dropped"]["why"]
+        # ... and when the real tool is taken off, the simulation has no tool either (it mirrors the real arm)
+        TL.clear()
+        assert TL.active(sim=True) is None and TL.source(sim=True) is None
+        assert "no tool any more" in TL.sim_tool_state()["dropped"]["why"]
+        # a tool attached IN SIMULATION is no copy: it stays, whatever the real arm carries
+        r, rc = fd_run(["--sim", "tool", "detach"])                       # (removes what was left behind)
+        assert rc == 0 and not os.path.exists(simf), r
+        TL.save(pen(name="real_pen", attached_at="2026-11-12T03:00:00"))
+        r, rc = fd_run(["--sim", "tool", "attach", "--name", "sim_pen", "--along-fingers", "0.10", "--no-robot"])
+        assert rc == 0 and TL.SIM_COPY_KEY not in json.load(open(simf)), r
+        for change in (lambda: TL.save(pen(name="real_pen", attached_at="2026-11-12T03:00:00", notes=["changed"])),
+                       lambda: TL.save(pen(name="pen4", attached_at="2026-11-14T10:00:00")), TL.clear):
+            change()
+            assert TL.active(sim=True).name == "sim_pen" and TL.source(sim=True) == simf
+            st = TL.sim_tool_state()
+            assert st["simulated_tool"] and not st["copy_of_real"] and st["dropped"] is None and "tool of its own" in st["note"], st
+        # a copy made before the mark existed (same name and attach time as the real tool, no mark): read while it is
+        # the newer file, left behind once the real tool file is newer
+        old_copy = pen(name="real_pen", attached_at="2026-11-12T03:00:00", pitch_deg=60.0).to_dict()
+        TL.save(pen(name="real_pen", attached_at="2026-11-12T03:00:00"))
+        with open(simf, "w") as f:
+            json.dump(old_copy, f)
+        os.utime(simf, ns=(os.stat(real).st_mtime_ns + 10 ** 9,) * 2)
+        assert TL.active(sim=True).pitch_deg == 60.0
+        os.utime(simf, ns=(os.stat(real).st_mtime_ns - 10 ** 9,) * 2)
+        assert TL.active(sim=True).pitch_deg == 75.0 and "older than the real tool file" in TL.sim_tool_state()["dropped"]["why"]
+        # a real tool file never carries the mark, whatever tool object is stored into it
+        TL.save(pen(name="real_pen", attached_at="2026-11-12T03:00:00"))
+        r, rc = fd_run(["--sim", "tool", "set", "--pitch", "66"])
+        copy = TL.active(sim=True)
+        assert rc == 0 and TL.SIM_COPY_KEY in copy.extra
+        TL.save(copy)
+        assert TL.SIM_COPY_KEY not in json.load(open(real)) and TL.active().pitch_deg == 66.0
+    finally:
+        TL.TOOL_FILE, TL.SIM_TOOL_FILE = saved[0], saved[1]
+        os.environ["FD_TOOL"] = saved[2]
+        for p in (real, simf):
+            if os.path.exists(p):
+                os.remove(p)
+    # with $FD_TOOL there is one file for both: a simulated save marks nothing
+    with tool_file(pen(attached_at="2026-11-12T03:00:00")):
+        r, rc = fd_run(["--sim", "tool", "set", "--pitch", "70"])
+        assert rc == 0 and TL.SIM_COPY_KEY not in json.load(open(TOOL_PATH)) and TL.active().pitch_deg == 70.0, r
+        assert TL.sim_tool_state() == {"simulated_tool": False, "file": TOOL_PATH, "copy_of_real": False, "dropped": None, "note": None}
+
+
+def test_a_jaw_that_was_moved_since_the_tool_was_attached_stops_ready_and_names_the_way_out():
+    """Review finding 49, for the tools of this suite: a pen whose file records where the jaw stood when it was
+    attached (`fd tool attach` reads it) and says nothing about the jaw it is taped to. The jaw was compared with
+    that record only for a tool held by a jaw squeeze. Now `ready` refuses, before the torque comes on, when the
+    jaw stands more than 8 ticks (0.7 deg) from the record; folding away is never held up; a pen recorded on the
+    FIXED jaw, and one attached without a look at the arm, are not compared at all."""
+    tool = pen(gripper_raw=2061)
+    assert TL.jaw_tolerance(tool) == TL.JAW_END_TOL_TICKS == 8 and TL.jaw_tolerance(pen()) is None and TL.jaw_tolerance(None) is None
+    # where it stood when the pen was attached (and a few ticks beside it): `ready` as it always was
+    for jaw in (2061, 2061 + 8, 2061 - 8):
+        arm, bus = sim_arm(tool=tool)
+        place(arm, TL.rest_q(arm, tool), gripper=jaw)
+        h0 = TL.tip_height(arm, arm.read_q(), tool)
+        r = TL.go_ready(arm)
+        _check_ready(arm, bus, tool, r, h0, f"jaw at {jaw}")
+        assert "jaw" not in r and gripper_goals(bus) in ([], [jaw]), (jaw, r.get("jaw"), gripper_goals(bus))   # (the hold of torque on)
+    # the jaw was opened since (by hand, while the arm lay limp): refused before anything is switched on or written
+    for jaw in (2184, 2061 + 9, 2061 - 9):
+        arm, bus = sim_arm(tool=tool)
+        place(arm, TL.rest_q(arm, tool), gripper=jaw)
+        before, pos = writes(bus), dict(bus.pos)
+        msg = refused(lambda: TL.go_ready(arm), "pen2", f"raw {jaw}", "raw 2061", f"{abs(jaw - 2061)} ticks",
+                      "no longer where its tip was measured", "Nothing was written", "does not say on which jaw",
+                      "fd tool jaw status", "fd tool jaw mount moving_outer", "fd tool jaw close", "fd tool jaw mount fixed")
+        assert writes(bus) == before and bus.pos == pos and not any(bus.torque.values()), msg
+        refused(lambda: TL.jaw_in_place(arm), f"raw {jaw}")
+        refused(lambda: TL.hold_jaw(arm), f"raw {jaw}")
+        assert writes(bus) == before and not any(bus.torque.values())
+    # `fd ready` gives the refusal as a result: nothing moved, and the text names the jaw command
+    with tool_file(tool):
+        bus = RecBus()
+        arm = Arm(bus=bus, cfg=load_config(), tool=tool).open()
+        place(arm, TL.rest_q(arm, tool), gripper=2184)
+        before, pos = writes(bus), dict(bus.pos)
+        r, rc = fd_run(["--sim", "ready"], bus)
+        assert rc == 1 and r["ok"] is False and r["error"] == "SafetyError" and "raw 2184" in r["message"], r
+        assert "fd tool jaw status" in r.get("next", "") + r["message"] and writes(bus) == before and bus.pos == pos, r
+        # folding the arm away is never held up by the jaw: `fd tool rest` works, and its result says what is wrong
+        place(arm, TL.ready_q(arm, tool), gripper=2184)
+        r, rc = fd_run(["--sim", "torque", "on"], bus)
+        assert rc == 0, r
+        bus.sleep(0.6)
+        r, rc = fd_run(["--sim", "tool", "rest"], bus)
+        assert rc == 0 and r["ok"] and r["torque"] == "off" and "no longer where its tip was measured" in r["jaw"]["error"], r
+        assert round(bus.pos["gripper"]) == 2184 and all(v == 2184 for v in gripper_goals(bus)), gripper_goals(bus)
+    # the way out for a pen that is taped to the fixed jaw: say so, and the moving jaw does not matter any more
+    fixed = pen(gripper_raw=2061, on_jaw="fixed")
+    assert TL.jaw_tolerance(fixed) is None
+    arm, bus = sim_arm(tool=fixed)
+    place(arm, TL.rest_q(arm, fixed), gripper=2184)
+    reads = bus.io["reads"]
+    assert TL.jaw_in_place(arm) is None and bus.io["reads"] == reads
+    r = TL.go_ready(arm)
+    assert "jaw" not in r and round(bus.pos["gripper"]) == 2184, r
+    # a pen attached without a look at the arm has no jaw position on record: nothing to compare, as before
+    arm, bus = sim_arm(tool=pen())
+    place(arm, TL.rest_q(arm, arm.tool), gripper=2600)
+    reads = bus.io["reads"]
+    assert TL.jaw_in_place(arm) is None and TL.hold_jaw(arm)["held"] is False and bus.io["reads"] == reads
+    assert "jaw" not in TL.go_ready(arm)
+
+
+def test_the_pen_commands_refuse_a_jaw_that_moved_before_the_torque_comes_on():
+    """Round 2 (R26 b). `fd ready` and the painting commands compare the jaw with the tool file before they switch
+    the arm on (review finding 49); `fd draw` and `fd tool calibrate` switched it on without asking
+    (penskill._Run.power): a pen whose jaw had been opened since it was attached, its tip elsewhere than the
+    file's, was lowered onto the paper all the same. Now power() asks tooling.jaw_in_place first, once per
+    command, and a refusal leaves the arm exactly as it was."""
+    import penskill
+    tool = pen(gripper_raw=2061)
+
+    def a_run(t, jaw, torque=False):
+        arm, bus = sim_arm(tool=t)
+        place(arm, TL.rest_q(arm, t), gripper=jaw)
+        if torque:
+            arm.torque_on()
+            bus.sleep(0.4)
+        sess = penskill.PenSession(arm, None, lambda exposure="paper": None)
+        return penskill._Run(sess, penskill.PenOptions().check(), None), arm, bus
+
+    # the jaw where it stood when the pen was attached (8 ticks beside it still count): the arm is switched on
+    for jaw in (2061, 2061 + 8, 2061 - 8):
+        run, arm, bus = a_run(tool, jaw)
+        run.power()
+        assert arm.is_torqued() and run.moved is True and run.sp and round(bus.pos["gripper"]) == jaw, jaw
+    # elsewhere: refused before anything is switched on or written, limp or holding, and the run says "not moved"
+    for jaw in (2061 + 9, 2061 - 9, 2184):
+        for torque in (False, True):
+            run, arm, bus = a_run(tool, jaw, torque)
+            before, pos = writes(bus), dict(bus.pos)
+            msg = refused(run.power, "pen2", f"raw {jaw}", "raw 2061", "no longer where its tip was measured",
+                          "Nothing was written", "fd tool jaw status", "fd tool jaw mount fixed")
+            assert writes(bus) == before and bus.pos == pos and arm.is_torqued() is torque and run.moved is False, (jaw, torque, msg)
+            assert run.pen()["where"] == "not moved", run.pen()
+    # asked once per command, not at every power()
+    run, arm, bus = a_run(tool, 2061)
+    real, asked = TL.jaw_in_place, []
+    TL.jaw_in_place = lambda *a, **k: asked.append(1) or real(*a, **k)
+    try:
+        for _ in range(3):
+            run.power()
+    finally:
+        TL.jaw_in_place = real
+    assert asked == [1]
+    # a pen recorded on the FIXED jaw, and one attached without a look at the arm: not compared, as everywhere
+    for t in (pen(gripper_raw=2061, on_jaw="fixed"), pen()):
+        run, arm, bus = a_run(t, 2400)
+        run.power()
+        assert arm.is_torqued() and round(bus.pos["gripper"]) == 2400
+    # the command: `fd tool calibrate` answers with a result, the pen "not moved", the torque off, no photo taken
+    with tool_file(tool):
+        bus = RecBus()
+        arm = Arm(bus=bus, cfg=load_config(), tool=tool).open()
+        place(arm, TL.rest_q(arm, tool), gripper=2184)
+        before, pos = writes(bus), dict(bus.pos)
+        r, rc = fd_run(["--sim", "tool", "calibrate", "--stage", "tip", "--new-sheet"], bus)
+        assert rc == 1 and r["ok"] is False and r["stage"] == "start" and "raw 2184" in r["reason"], r
+        assert "no longer where its tip was measured" in r["reason"] and "fd tool jaw status" in r["reason"], r["reason"]
+        assert r["pen"]["where"] == "not moved" and r["pen"]["torque"] == "off" and r["photos"] == [], r
+        assert writes(bus) == before and bus.pos == pos and TL.active().tip_offset == PEN_TIP
+        # Round 3 (T15): next and say name the jaw and the way out for THAT tool. They were the general ones of a stop
+        # on the way ("look at the reason and at `fd state`", 「校正の途中で止まりました（start: SafetyError）」): the
+        # way out stood only at the end of the reason. The next is the refusal's own last sentence, as `fd ready` gives it.
+        way = r["reason"].partition("Next: ")[2]
+        assert way and r["next"] == "nothing moved. " + way[0].upper() + way[1:], r["next"]
+        assert r["next"].startswith("nothing moved. `fd tool jaw status` shows the jaw") and "`fd tool jaw mount fixed`" in r["next"], r["next"]
+        assert "fd state" not in r["next"] and "lifted" not in r["next"], r["next"]
+        assert "爪" in r["say"] and "fd tool jaw status" in r["say"] and "校正を始めませんでした" in r["say"], r["say"]
+        assert "途中で止まりました" not in r["say"] and "アームは動かしていません" in r["say"], r["say"]
+    # ... and the same for `fd draw` with a pen that carries the pen calibration (its jaw is asked at the first photo)
+    measured = {"at": "2026-11-12T03:10:00", "tip_offset": list(PEN_TIP), "pitch_deg": 75.0}
+    drawn = pen(gripper_raw=2061, calibrated={"tip": dict(measured), "contact": dict(measured), "map": dict(measured)},
+                contact={"x0": 0.24, "y0": 0.0, "a": -0.0015, "bx": 0.0, "by": 0.0, "rms_mm": 0.2, "points": []},
+                corr_map={"centre": [0.22, 0.0], "kind": "affine", "coef": [[0, 0], [1, 0], [0, 1]], "rms_mm": 1.0, "max_mm": 2.0, "n": 9})
+    with tool_file(drawn):
+        bus = RecBus()
+        arm = Arm(bus=bus, cfg=load_config(), tool=drawn).open()
+        place(arm, TL.rest_q(arm, drawn), gripper=2184)
+        before, pos = writes(bus), dict(bus.pos)
+        r, rc = fd_run(["--sim", "draw", "cat", "--new-sheet"], bus)
+        assert rc == 1 and r["ok"] is False and r["stage"] == "photo" and "raw 2184" in r["reason"] and r["pen"]["where"] == "not moved", r
+        assert r["next"].startswith("nothing moved. `fd tool jaw status` shows the jaw") and "`fd tool jaw mount fixed`" in r["next"], r["next"]
+        assert "爪" in r["say"] and "fd tool jaw status" in r["say"] and "描画を始めませんでした" in r["say"], r["say"]
+        assert writes(bus) == before and bus.pos == pos and not any(bus.torque.values())
+        # a stop of another kind keeps the general words: the jaw is named only when the jaw is what refused
+        import penskill as PSK
+        real = PSK._Run.look
+        PSK._Run.look = lambda self, *a, **k: (_ for _ in ()).throw(SafetyError("the photo pose is outside the tool's joint limits"))
+        try:
+            place(arm, TL.rest_q(arm, drawn), gripper=2061)
+            r, rc = fd_run(["--sim", "draw", "cat", "--new-sheet"], bus)
+        finally:
+            PSK._Run.look = real
+        assert rc == 1 and r["stage"] == "photo" and r["next"].startswith("look at the reason and at `fd state`"), r
+        assert "描画の途中で止まりました" in r["say"] and "爪" not in r["say"], r["say"]
+
+
+def test_the_example_of_a_tool_joint_limit_is_the_cap_that_was_measured():
+    """Review finding 58. The examples of a brush's wrist limit said 20..103; 103 is the wrist's own limit, where a
+    move stopped 3.7 deg short with the handle against the arm on 2026-11-13. The cap that was measured is 97,
+    and an operator copies the example."""
+    import inspect
+    text = inspect.getsource(TL.Tool)
+    assert '{"wrist_flex": [20, 97]}' in text and "20, 103]" not in text and "20:103" not in text
+    whole = inspect.getsource(TL) + inspect.getsource(Arm.q_limits)
+    assert "wrist_flex=20:103" not in whole and "[20, 103]" not in whole and "20..103" not in whole
+    # ... and it is a limit the arm applies: inside the wrist's own range, with the 6 deg to spare that were measured
+    arm, _ = sim_arm(tool=brush())
+    lo, hi = (math.degrees(v) for v in arm.q_limits()["wrist_flex"])
+    bare, _ = sim_arm(tool=None)
+    assert abs(lo - 20.0) < 1e-9 and abs(hi - 97.0) < 1e-9 and math.degrees(bare.q_limits()["wrist_flex"][1]) > 100.0
+
+
+def test_zz_the_real_tool_files_were_never_touched():
+    """(Runs LAST: the runner sorts the tests by name, and six tests used to run after this one.)"""
     assert (TL.TOOL_FILE == os.path.join(tazuna_paths.ROOT, "tool_active.json")
             and TL.SIM_TOOL_FILE == os.path.join(tazuna_paths.ROOT, "tool_active.sim.json"))
     assert os.environ["FD_TOOL"] == TOOL_PATH

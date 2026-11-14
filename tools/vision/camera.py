@@ -59,7 +59,17 @@ EXPOSURES = {
 EXPOSURE_WARM_FRAMES = 10   # frames dropped after a change of exposure (the first ones still have the old one)
 
 
+def _locked(what: str = "The camera"):
+    """HardwareLocked when the hardware lock is set (tools/motion/hwlock.py): the camera device and v4l2-ctl are
+    then not touched."""
+    import hwlock
+    msg = hwlock.message(f"{what} ({DEV})")
+    if msg:
+        raise hwlock.HardwareLocked(msg)
+
+
 def _ctl(pairs):
+    _locked("The camera's settings")
     for k, v in pairs:
         subprocess.run(["v4l2-ctl", "-d", DEV, "-c", f"{k}={v}"], capture_output=True, check=False)
 
@@ -99,6 +109,9 @@ def read_settings() -> dict:
     """Current values of the controls in LOCKED (name -> int); {} when v4l2-ctl cannot be asked."""
     names = ",".join(k for k, _ in LOCKED)
     try:
+        import hwlock
+        if hwlock.info() is not None:       # hardware lock: the camera is not asked either
+            return {}
         out = subprocess.run(["v4l2-ctl", "-d", DEV, "-C", names], capture_output=True, check=False, text=True,
                              timeout=5.0).stdout
     except (OSError, subprocess.SubprocessError):
@@ -149,6 +162,7 @@ def grab(n_avg: int = 4, warm: int = 5, lock: bool = True, exposure: str | None 
     are put back before this returns, also when the camera fails."""
     if exposure is not None and exposure not in EXPOSURES:
         raise ValueError(f"unknown exposure {exposure!r}: one of {', '.join(EXPOSURES)}")
+    _locked()
     if lock:
         lock_settings()
     if exposure is None:
@@ -162,6 +176,7 @@ def grab(n_avg: int = 4, warm: int = 5, lock: bool = True, exposure: str | None 
 
 
 def _grab_frames(n_avg: int, warm: int) -> np.ndarray:
+    _locked()
     cap = cv2.VideoCapture(DEV, cv2.CAP_V4L2)
     try:
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))

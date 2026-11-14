@@ -7,6 +7,16 @@ No hardware is touched: the photos are the saved ones of 2026-11-11 (tests/testd
 manifest.json) and synthetic sheets; v4l2-ctl and cv2.VideoCapture are replaced by recorders, and an audit
 hook fails the run if anything opens /dev/video*, /dev/ttyACM* or starts v4l2-ctl for real.
 
+The hardware lock (tools/motion/hwlock.py) of this suite is a scratch path of its own that is never written, so the
+suite runs "not locked" whatever the user's lock says: four tests drive the exposure functions of camera.py and
+fastcam.py through recorders, and with the user's lock set those functions refuse before they reach the recorders
+(24 of 28 passed on the locked rig of 2026-11-13, and `tests/run_all.py` could not end with "all suites passed"
+in exactly the state in which programs are told to rely on the tests). With the lock out of the way, what stands
+between this suite and the hardware is: the audit hook; cv2.VideoCapture replaced by a refusal from the first line
+on (OpenCV opens a camera without Python's open(), which the hook cannot see); names for the camera and the servo
+port that do not exist; and fd commands that are --sim or read a saved image. test_zy_... asserts each of them, and
+that the user's lock file is what it was.
+
 Where a test knows more than the manifest says (places read from the photos by eye, a manifest value that
 is itself an artefact of the prototype detector), its docstring says so.
 """
@@ -19,11 +29,15 @@ import sys as _sys
 _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "tools"))
 import tazuna_paths  # noqa: E402,F401
 
+import atexit
 import contextlib
+import hashlib
 import io
 import json
 import math
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -37,6 +51,11 @@ sys.path.insert(0, HERE)
 TD = os.path.join(HERE, "testdata", "pen_20261111")
 os.environ["FD_CONFIG"] = os.path.join(TD, "config.json")
 os.environ["FD_CAMERA_MODEL"] = os.path.join(TD, "camera_model.json")
+# The hardware lock of this suite: a scratch path of its own, never written (see the top of the file).
+_LOCK_DIR = tempfile.mkdtemp(prefix="tz_ink_")
+atexit.register(shutil.rmtree, _LOCK_DIR, ignore_errors=True)
+HW_LOCK = os.path.join(_LOCK_DIR, "hardware.lock")
+os.environ["TAZUNA_HW_LOCK"] = HW_LOCK
 
 
 def _audit(event, args):
@@ -52,7 +71,9 @@ def _audit(event, args):
 sys.addaudithook(_audit)
 
 import camera as C  # noqa: E402
+import hwlock  # noqa: E402
 import ink  # noqa: E402
+import servo_bus as _servo_bus  # noqa: E402
 
 M = json.load(open(os.path.join(TD, "manifest.json")))
 Z = float(M["table_z"])
@@ -67,6 +88,26 @@ class _NoCapture:
 
     def __init__(self, *a, **k):
         raise RuntimeError("test_ink: cv2.VideoCapture opened for real")
+
+
+def _user_lock():
+    """The user's own lock file as it is (never written here): None, or (size, mtime, md5)."""
+    try:
+        with open(hwlock.DEFAULT, "rb") as f:
+            return os.path.getsize(hwlock.DEFAULT), os.stat(hwlock.DEFAULT).st_mtime_ns, hashlib.md5(f.read()).hexdigest()
+    except FileNotFoundError:
+        return None
+
+
+# With the lock out of the way (the scratch path above), from the first line on: no camera can be opened through
+# OpenCV (camera.py and fastcam.py share this cv2; the recorders of the tests put this refusal back when they are
+# done), and the names of the camera and of the servo port are names that do not exist.
+C.cv2.VideoCapture = _NoCapture
+C.DEV = "/dev/video_none_for_tests"
+_servo_bus.Bus.__init__.__defaults__ = ("/dev/ttyACM_none_for_tests",) + tuple(_servo_bus.Bus.__init__.__defaults__[1:])
+assert hwlock.path() == HW_LOCK != hwlock.DEFAULT and hwlock.info() is None, "the scratch lock of this suite is not in force"
+assert _servo_bus.Bus().port == "/dev/ttyACM_none_for_tests" and not os.path.exists(C.DEV)
+_USER_LOCK = _user_lock()
 
 
 def img(rel):
@@ -917,6 +958,57 @@ def test_ink_module_is_pure():
     for name in ("import camera", "import robot", "import fastcam", "import skills", "import kinematics", "VideoCapture",
                  "subprocess", "import scene"):
         assert name not in src, name
+
+
+def test_zy_no_way_to_the_hardware_while_the_lock_is_out_of_the_way():
+    """This suite runs with a scratch hardware lock that is never set (the top of the file says why). What
+    stands between it and the hardware instead, each shown to work, and the user's own lock file untouched."""
+    # its own lock path, never written; the user's lock file is what it was before the first test
+    assert os.environ["TAZUNA_HW_LOCK"] == HW_LOCK and hwlock.path() == HW_LOCK != hwlock.DEFAULT
+    assert not os.path.exists(HW_LOCK) and hwlock.info() is None, "a test set the scratch lock"
+    assert _user_lock() == _USER_LOCK, "the user's hardware lock was created, changed or removed"
+    # no camera through OpenCV: a refusal for camera.py and fastcam.py alike, and again after a recorder is done
+    import fastcam
+    assert C.cv2 is cv2 is fastcam.cv2 and cv2.VideoCapture is _NoCapture
+    with _Recorder():
+        assert cv2.VideoCapture is not _NoCapture
+    assert cv2.VideoCapture is _NoCapture
+    for dev in (C.DEV, "/dev/video0", 0):
+        try:
+            cv2.VideoCapture(dev, cv2.CAP_V4L2)
+            raise AssertionError(f"cv2.VideoCapture({dev!r}) was opened")
+        except RuntimeError as e:
+            assert "opened for real" in str(e), e
+    # no device node: the names in force do not exist, and the hook refuses every device name before it is opened
+    assert C.DEV == "/dev/video_none_for_tests" and not os.path.exists(C.DEV) and fastcam.FastCamera(start=False).dev == C.DEV
+    assert _servo_bus.Bus().port == "/dev/ttyACM_none_for_tests" and not os.path.exists(_servo_bus.Bus().port)
+    for path in (C.DEV, "/dev/video_none", "/dev/ttyACM_none", "/dev/ttyUSB_none"):
+        for opener in (open, lambda p: os.open(p, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)):        # (the second: as pyserial does)
+            try:
+                opener(path)
+                raise AssertionError(f"{path} was opened")
+            except RuntimeError as e:
+                assert "hardware opened" in str(e), e
+            except OSError as e:
+                raise AssertionError(f"the audit hook is not armed: {path} was asked for ({e})") from None
+    # no v4l2-ctl: outside a recorder a call is refused by the hook before the program starts
+    try:
+        subprocess.run(["v4l2-ctl", "-d", C.DEV, "-C", "gain"], capture_output=True, check=False)
+        raise AssertionError("v4l2-ctl was started")
+    except RuntimeError as e:
+        assert "v4l2-ctl started for real" in str(e), e
+    # ... so what camera.py does without a recorder ends in that refusal, not at the device
+    for fn in (C.lock_settings, C.restore_auto, lambda: C.set_exposure("paper"), C.grab):
+        try:
+            fn()
+            raise AssertionError("camera.py reached past the guards")
+        except RuntimeError as e:
+            assert "v4l2-ctl started for real" in str(e) or "opened for real" in str(e), e
+    try:                                        # (read_settings swallows OSError, not the hook's refusal)
+        C.read_settings()
+        raise AssertionError("camera.read_settings() asked the camera")
+    except RuntimeError as e:
+        assert "v4l2-ctl started for real" in str(e), e
 
 
 def test_zz_every_call_was_fast_enough():

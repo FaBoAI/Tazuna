@@ -4,8 +4,8 @@
 
 | ファイル | 役割 |
 |---|---|
-| `camera.py` | 撮影（`grab()`）、カメラの設定の固定と解除（`lock_settings()`、`restore_auto()`）、露出の切り替え（机用の `desk`、白い紙用の `paper`）、カメラモデル（`CameraModel`、`fit_camera()`） |
-| `fastcam.py` | `FastCamera`: カメラを開いたままにして、いつも最新の 1 枚を持つスレッド（毎回開くと、1 枚に約 1.2 秒かかるため） |
+| `camera.py` | 撮影（`grab()`）、カメラの設定の固定と解除（`lock_settings()`、`restore_auto()`）、露出の切り替え（机用の `desk`、白い紙用の `paper`）、カメラモデル（`CameraModel`、`fit_camera()`）。実機のロック（`fd hw lock`。[`../motion/hwlock.py`](../motion/README.md)）が掛かっている間は、カメラの装置にも `v4l2-ctl` にも触れる前に `HardwareLocked` で断る（2026-11-13 に追加） |
+| `fastcam.py` | `FastCamera`: カメラを開いたままにして、いつも最新の 1 枚を持つスレッド（毎回開くと、1 枚に約 1.2 秒かかるため）。開く前に、`camera.py` を通して実機のロックを確かめる |
 | `scene.py` | 認識の本体。`perceive()` が物の一覧（`Scene`）を返す。物がまだそこにあるかの確認、容器の中に見える色、爪の位置の検出（`detect_jaws()`）もここ |
 | `vision.py` | 最初の版（v1）からある画像処理の部品（色の切り出し、指先の検出 `find_tip()`、画像への描き込みと保存 `save_view()`）。低レベルのコマンドと校正のコマンドが使う |
 | `blockfit.py`、`capfit.py` | 写真 1 枚から箱型の物を測る `measure_block()` と、立っている円柱を測る `fit_cap()`。中身は `scene.perceive()` を呼ぶ、互換のための入口 |
@@ -21,12 +21,12 @@
 ## 必要なもの
 
 - 読み込むフォルダ: `ik`（写真からアームを除くためと、爪の形）、`cli/fdtypes.py`（`Scene`、`SceneObject`）。カメラモデルの場所は `tazuna_paths` が教えます。
-- ハードウェア: カメラ（定数 `camera.DEV`。値は [docs/MANUAL.md](../../docs/MANUAL.md)「はじめに」）と `v4l2-ctl`。`scene.py`、`vision.py`、`blockfit.py`、`capfit.py` は計算だけなので、保存した写真でも動きます。
+- ハードウェア: カメラ（定数 `camera.DEV`。値は [docs/MANUAL.md](../../docs/MANUAL.md)「はじめに」）と `v4l2-ctl`。`scene.py`、`vision.py`、`blockfit.py`、`capfit.py` は計算だけなので、保存した写真でも動きます。実機のロックの確かめに、`motion/hwlock.py` を、関数の中で import します。
 
 ## テスト
 
-`tests/test_scene.py`（50 件。保存した写真と、手で測った正解値。`--live` を付けたときだけ、実カメラを 1 回開きます）、`tests/test_ink.py`（露出の切り替え）。`tests/test_skills.py` も、保存した写真で認識を通します。
+`tests/test_scene.py`（51 件。保存した写真と、手で測った正解値。`--live` を付けたときだけ、実カメラを 1 回開きます。実機がロックされている間は、`--live` でも開きません）、`tests/test_ink.py`（露出の切り替え）。`tests/test_skills.py` も、保存した写真で認識を通します。ロック中にカメラに触れないことは、`tests/test_hwlock.py` が確かめます。カメラの代役を使う `test_scene.py` の 2 件と `test_ink.py` は、2026-11-14 未明から、実機がロックされていても合格します（[tests/README.md](../../tests/README.md)）。
 
 ## 実機での状況
 
-2026-11-11 の実機のピックで、この認識と最後の確認を使いました。爪の位置の検出は、実機のピックでは記録しただけで、位置の補正にはまだ使っていません。紙用の露出での撮影は、`fd` からは実機でまだ行っていません。認識の限界（同じ色の物が接していると 1 個に見える、机に近い色は見えない、など）は、MANUAL 9 章にあります。
+2026-11-11 の実機のピックで、この認識と最後の確認を使いました。爪の位置の検出は、実機のピックでは記録しただけで、位置の補正にはまだ使っていません。紙用の露出での撮影は、2026-11-13 に、筆と絵の具の作業（その日の版の `fd paint look` など）で、実機で使いました（MANUAL 11 章）。ペンの校正と描画（`fd tool calibrate`、`fd draw`）からは、実機でまだ行っていません。認識の限界（同じ色の物が接していると 1 個に見える、机に近い色は見えない、など）は、MANUAL 9 章にあります。

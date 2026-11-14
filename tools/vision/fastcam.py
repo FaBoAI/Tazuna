@@ -74,6 +74,7 @@ class FastCamera:
     def start(self) -> "FastCamera":
         if self._thread is not None:
             return self
+        C._locked("The camera")             # hardware lock (tools/motion/hwlock.py): raises before anything is touched
         if self.lock:
             already = C.settings_locked()       # None = cannot tell: treat as changed
             C.lock_settings()

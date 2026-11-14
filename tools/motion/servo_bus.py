@@ -31,6 +31,8 @@ import time
 
 import scservo_sdk as scs
 
+import hwlock
+
 PORT = "/dev/ttyACM0"
 BAUD = 1_000_000
 LOCK_PATH = "/tmp/fable_direct_bus.lock"
@@ -216,6 +218,10 @@ class Bus:
     def open(self, wait_s: float = 20.0) -> "Bus":
         if self.ph is not None or self._lock_fd is not None:
             raise BusError(f"the bus on {self.port} is already open")
+        if hwlock.real_port(self.port):         # (before the flock and before the port is touched)
+            locked = hwlock.message(f"The servo bus on {self.port}")
+            if locked:
+                raise BusError(locked)
         lock_path = self.lock_path or LOCK_PATH
         try:
             self._lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o666)

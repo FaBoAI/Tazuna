@@ -31,6 +31,8 @@
 4. 終わるとき: `fd park`（収納姿勢に戻してトルク OFF、カメラを自動露出に戻す）。
    続けて作業するなら park しない（待機姿勢のままの方が次が速い）。
    グリッパーにペンなどのツールが付いているときは `fd park` は拒否される: `fd tool rest`（下の「ペンで描く」）。
+   筆が付いていて机に絵があるときは `fd paint rest`（下の「絵の具で描く」。`fd tool rest` は絵の上に畳む）。
+   断った結果の `next` が、どちらを使うかを言う（絵のセットアップが残っている間は `fd paint rest`。11/14 朝に修正）。
 
 ## 箱から取り出す（`fd take`）
 
@@ -79,24 +81,33 @@
 
 ## ペンで描く（`fd tool …` / `fd draw`）
 
-**2026-11-12 の未明に追加した機能で、実機では一度も動かしていない**（シミュレーションのアーム・紙と、11/11 の保存写真で
-のみ検証）。実機の初回は必ずユーザーが見ている状態で、各コマンドを `--dry` → 本番の順に。うまく行かなくても
+**ペンの校正と描画（`fd tool calibrate` / `fd draw`）は 2026-11-12 の未明に追加した機能で、実機では一度も動かしていない**
+（シミュレーションのアーム・紙と、11/11 の保存写真でのみ検証）。実機で使ったのは `fd tool attach / set / status / rest` だけ
+（11/13、筆を付けた状態で）。実機の初回は必ずユーザーが見ている状態で、各コマンドを `--dry` → 本番の順に。うまく行かなくても
 自分で手順を組まない（11/11 は手作りスクリプトで 75 分かかり、紙に試し線を 8 か所重ね書きした）。
 
 **グリッパーに何か付けたら、動かす前に必ず `fd tool attach` で登録する。** 登録が無いと `fd ready` / `fd park` は道具を
 知らないまま動き、`fd park` ではペン先が机の 17 mm 下まで下がる（11/12 の検証。グリッパーも開く）。付いているか
 分からないときは `fd tool status`（何も動かない）。
 
+**`fd tool calibrate` はペンの校正で、絵の具用の道具には `stage: tool` で断られる**（11/14 に追加。何も動かない）。絵の具用の
+道具とは: 筆先を空中で測った記録がある道具、爪を保持した記録（`fd tool jaw close`）がある道具と、
+**絵のセットアップ（`paint_setup.json`）が残っている間のすべての道具**（この装置には今ある。`--sim` でも同じ）。「固定爪に
+留めた」という記録（`fd tool jaw mount fixed`）だけでは、絵の具用にならない（11/14 朝に修正: 絵のセットアップがない装置では、
+そのペンは `--pen` なしで校正できる）。付いているのがペンで、ペンの校正をするときだけ `--pen` を付ける（申告）。**筆には
+付けない**: 先端を紙の 6 mm 下まで下ろして試し書きをし、測った筆先をインクから読んだ値に置き換えてしまう。絵の具用の道具には、
+`fd tool status` / `attach` / `set` と、断られた `fd draw` の `next` も `fd paint status` を言う（筆の次の一手はそちら）。
+
 ペンをグリッパーにテープで留めたら（キャップを外し、新しい紙か捨ててよい紙をテープで留めてから）、この順に 1 コマンドずつ:
 
 ```bash
 FD=/home/jetson/lerobot/tazuna/fd
 $FD tool attach --name pen --along-fingers 0.055   # 指先からペン先までの長さ[m]。定規で測って 5 mm 以内（迷ったら長めに）
-$FD tool calibrate --dry                           # 写真 1 枚と計画だけ（試し書きのおおよその場所）。何も動かない
-$FD tool calibrate                                 # 先端 → 接触高さ → 位置補正 → 線の向き（約 5 分、写真 約 20 枚）
+$FD tool calibrate --pen --dry                     # 写真 1 枚と計画だけ（試し書きのおおよその場所）。何も動かない
+$FD tool calibrate --pen                           # 先端 → 接触高さ → 位置補正 → 線の向き（約 5 分、写真 約 20 枚）
 $FD draw cat --dry                                 # 配置とプレビュー画像（"preview"）。1 枚だけ見る
 $FD draw cat                                       # 描く → 最後に写真で線を確認（約 4 分）
-$FD tool rest                                      # 片付け（park は使えない）。ペンを外したら: fd tool detach
+$FD tool rest                                      # 片付け（park は使えない。絵のセットアップがある間は下の canvas の項）。ペンを外したら: fd tool detach
 ```
 
 - **`fd tool calibrate` は約 5〜6 分、`fd draw` は約 4〜5 分かかる。Bash の timeout を 600000 ms にして、フォアグラウンドで
@@ -110,8 +121,11 @@ $FD tool rest                                      # 片付け（park は使え�
   校正の前に `fd ready` は不要（待機姿勢は紙の真上で、写真の邪魔になる）。
 - 結果は JSON 1 個: `ok` / `stage` / `reason` / `next` / `say`（そのまま伝えてよい）/ `pen`（ペン先の高さ・アームの
   状態）/ `photos`。`fd draw` の `ok` は最後の写真で線の 85 % 以上が確認できたかで決まる（`coverage.gaps` に欠けた所）。
-- `fd tool calibrate --stage tip|contact|map|direction` で 1 段階だけやり直せる（各段階がツールのファイルを読み書き
-  する）。`tip` をやり直すと接触高さと位置補正は消える（先端が変わるので測り直し）。
+- `fd tool calibrate --pen --stage tip|contact|map|direction` で 1 段階だけやり直せる（各段階がツールのファイルを読み書き
+  する）。`tip` をやり直すと接触高さと位置補正は消える（先端が変わるので測り直し）。`--pen` を付けた結果の `next` / `notes` に
+  出る `fd tool calibrate …` には、`--pen` が付いている。
+- **試し書きは、写真に写った紙の上に置かれる。絵のキャンバスかどうかは見ない**（`--pen` を付けても同じ）。机に絵が残って
+  いるときは、どけてもらうか、`fd tool calibrate --pen --dry` の `preview` で場所を見てから。
 - 試し書きは、既定では「`fd draw` が使う枠（105 mm）の外」で、古い線から 3 cm 離れた未使用の紙に置く。紙が足りないと
   `layout` で止まる → 新しい紙を置いてもらう。捨てる紙なら `--marks-on scrap`（枠の中にも書く）。
 - `fd draw` のオプション: `--size MM`（既定 105）、`--at x,y`、`--rot 度|auto`、`--press MM`（接触面より下、既定 2.3・
@@ -127,14 +141,15 @@ $FD tool rest                                      # 片付け（park は使え�
 
 | stage | 意味 | すること |
 |---|---|---|
-| `tool` | ツール未登録 / 未校正 | `next` のコマンド（`fd tool attach …` / `fd tool calibrate`） |
+| `tool` | ツール未登録 / 未校正 / 絵の具用の道具に `fd tool calibrate`・`fd draw` を呼んだ | `next` のコマンド（`fd tool attach …` / `fd tool calibrate --pen`）。筆なら `fd paint status` |
+| `start`（`fd tool calibrate`）／`photo`（`fd draw`）で、`pen.where` が `not moved` | 爪が、登録したときの位置（`gripper_raw`）から 8 ticks（保持している爪は 40）より離れている。トルクを入れる前に断っている（11/14 から `fd draw` / `fd tool calibrate` も。`fd ready` は `plan`） | `next`（11/14 朝に修正: 「nothing moved.」のあとに、その留め方の直し方。`say` も爪のことを言う）: `fd tool jaw status` → 留め方に合うコマンド。固定爪に留めたペンは `fd tool jaw mount fixed`（以後、爪は比べない。ペンのまま扱われる） |
 | `options` | オプションの値が範囲外 | 直して再実行（何も動いていない） |
 | `load` | 絵のファイルが無い・壊れている・枠からはみ出す | `reason` を読んで直す。同梱の絵は `cat` だけ |
 | `visual` | 写真で線の有無を判定できない（白飛び・暗い・ノイズ・腕や物が紙にかかっている・古い線の上） | **深くしない。** `fd snap --exposure paper` で 1 枚見て、照明や紙の上の物を直し、同じ段階をやり直す |
 | `layout` | 未使用の紙・描く場所が足りない | 新しい紙、`--size` を小さく、または `--marks-on scrap` |
 | `plan` | 届かない・安全チェックで拒否 | `--size` を小さく / `--at x,y` で場所を変える |
 | `tip` `contact` `map` | 測定が成立しない（インクが出ない・平面に乗らない・印が 6 個未満） | `reason` を伝え、ペンが書けるか・紙が浮いていないか見てもらってからその段階をやり直す |
-| `draw` `verify` | 途中で止まった / 線が足りない | 最後の写真を 1 枚見る。届いていない所があれば `fd tool calibrate --stage contact` |
+| `draw` `verify` | 途中で止まった / 線が足りない | 最後の写真を 1 枚見る。届いていない所があれば `fd tool calibrate --pen --stage contact` |
 
 守ること:
 
@@ -144,6 +159,9 @@ $FD tool rest                                      # 片付け（park は使え�
   その 3 mm 下まで。描くときは接触面の `--press`（最大 4 mm）下まで。
 - ペンが付いている間は `fd park` / `fd pick` / `fd take` / `fd grip` などは拒否される。待機は `fd ready`、片付けは
   `fd tool rest`。
+- **絵のセットアップ（`paint_setup.json`）が残っている間、`fd tool rest` は、ツールの先端がそのキャンバスの上に来る畳み方を
+  `stage: canvas` で断る**（11/13 に追加。ペンでも同じ。既定の旋回 20° は 11/13 のキャンバスの内側）。紙がもう無いとユーザーに
+  確かめてから `fd tool rest --over-canvas`、または机の空いた側へ `fd tool rest --pan 度`（`--dry` で先に確かめる）。
 - ペンを付け直した・ずれた → `fd tool attach --replace …` からやり直し（校正は全部無効）。`fd tool set` で先端や角度を
   変えたときも、前の校正では描けない（`fd draw` が `tool` で断る）: `fd tool calibrate` をやり直す。
 - `fd tool rest` のあともカメラは固定露出のまま。作業を終えるなら `fd camera auto`。
@@ -153,12 +171,233 @@ $FD tool rest                                      # 片付け（park は使え�
 - **未解決（11/12）**: `fd tool calibrate --dry` は、紙の空きが足りなくても「計画ができました」と答えることがある
   （本番で先端の試し線を書いたあと `contact` で止まる）。校正は新しい紙で始める。`fd draw` の `--at` / `--size` は
   希望として扱われ、入らないと別の場所・小さい寸法で描く: `--dry` の結果の `layout`（centre, size_mm）を必ず見る。
-- 練習（実機に触れない）: `fd --sim tool attach …` → `fd --sim tool calibrate --truth FILE` → `fd --sim draw cat`。
+- 練習（実機に触れない）: `fd --sim tool attach …` → `fd --sim tool calibrate --pen --truth FILE` → `fd --sim draw cat`
+  （絵のセットアップがある間は、`--sim` でも `--pen` が要る）。
   `--truth` は隠れた誤差を書いた JSON（例 `{"night": true, "seed": 3}` = 11/11 の夜と同じ誤差）で、紙・ペン・カメラ
   まで全部シミュレーション（カメラも開かない）。シミュレーションのツールと紙は木の外
   （`/tmp/tazuna_sim_<uid>/…`）に残り、次の `fd --sim` に引き継がれる（白紙に戻す: `--new-sheet`、
-  外す: `fd --sim tool detach`）。**シミュレーションの成功は実機の成功ではない**（接触力・インクの出方・紙の動きは
-  再現していない）。
+  外す: `fd --sim tool detach`）。`fd --sim tool …` の結果の `simulated_tool` / `sim_note` と `say` が、シミュレーション用の
+  記録（実機の記録の写し）に書いたのか、実機の記録を映しているだけかを言う。実機のツールが登録されている間の
+  `fd --sim tool detach` は、写しを捨てるだけで、シミュレーションは実機のツールを映し続ける（グリッパーのロックもそのまま）。
+  捨てる写しがないときも、「外した」とは答えない（11/14 朝に修正）: `attached: true`、`removed: false`、`mirrors`（実機のツールの名前）。
+  **シミュレーションの成功は実機の成功ではない**（接触力・インクの出方・紙の動きは再現していない）。
+
+## 絵の具で描く（`fd paint` / `fd calib-air` / `fd tool jaw`）
+
+2026-11-13 に、筆をグリッパーにテープで留めて水彩画を 2 枚描いた（午前: 平筆で赤べこ。夕方: 細い丸筆で雷門、70 本・50 分）。
+**実機で動かしたのは、その日の版の `fd paint look / locate / test / run / rinse`、`fd tool attach / set / rest`、`fd snap` と、
+その場で書いたスクリプト**（爪を閉じて押さえる、空中の写真から筆先を測る、はしごを目で読んで紙の高さを決める、セットアップの
+ファイルの手書き）。その夜にスクリプトと手書きの部分をコマンドにし、レビューの指摘 58 件、11/14 未明の再検証の 28 件、
+11/14 朝の 3 回目の検証の 17 件を受けて直した（残したものは説明書 11 章）。**その夜に加えたものは、実機では一度も動かして
+いない**: `fd calib-air`、`fd tool jaw`、`fd paint brush / check / contact / preview / rest`、`--lower-mm`、`fd tool calibrate --pen`、
+下に書く断り方と「申告のオプション」の全部（確かめたのは、シミュレーションのアームと、その日の保存写真だけ。「11/14 朝」と
+書いた所も同じ）。実機の初回は、ユーザーが見ている状態で、`--dry` → 本番の順に 1 コマンドずつ。うまく行かなくても、自分で
+スクリプトを組まない。
+
+### いまの装置（2026-11-14 朝）と、最初にすること
+
+- **実機はロック中**（`fd hw status`）。ロックを外すのはユーザーだけ: 「実機を使ってよい」と言われるまで `fd hw unlock` を
+  実行しない。ロック中に使えるのは `fd --sim …` と、ファイルを読むだけのコマンド（`fd paint status`、`fd tool status` など）。
+- アームは旋回 −100° に畳んでトルク OFF。細い丸筆 `brush_thin` が**可動爪の外側**にテープで留めてあり、爪は閉じてある
+  （raw 2041。夕方の押し付けはスクリプトが掛けたもので、道具のファイルには「どの爪か」「押し付け」「筆先を測った記録」がない）。
+  絵のセットアップには、筆の種類の記載と、紙の高さをどの筆の状態で測ったかの記録がない。
+- このままだと、動く `fd paint`（`rest` 以外）は `tool`（筆先が未測定）で、`fd paint check` は `contact`（記録のない平面）で
+  断られる。`fd tool calibrate` は使わない（ペンの校正。この筆には `tool` で断られる）。`fd paint rest` は、いまの畳んだ腕を
+  動かさない（`chosen: as it lies`。筆先が未測定という警告は付く）。ロックが外れたら、**この順に**:
+
+```bash
+FD=/home/jetson/lerobot/tazuna/fd
+$FD calib-air --from /home/jetson/lerobot/tazuna/runs/20261113_110358/aircal_thin4 --save   # 動かない。夕方の最後の測定（36 枚）を記録にする
+$FD tool jaw mount moving_outer      # 動かない。写真で「可動爪の外側」と確かめてから
+$FD tool jaw close --dry             # 動かない。「ツールは動かない見込み」と出るか
+$FD tool jaw close                   # 爪だけが動く（腕はトルク OFF のまま）。固定爪に押し当てて保持
+$FD paint brush --kind round --fine 0.6:2.7 --broad 1.2:5.0 --load-mm 140   # ファイルだけ
+$FD paint contact --adopt            # 動かない。夕方に測った紙の高さを「今の筆の状態のもの」と記録する
+$FD paint status                     # next が `fd paint check` … になれば準備完了。最初の実動作は `fd paint look`
+```
+
+  **`fd paint status` の `next` に 1 つずつ従うと、この順になる**（11/14 に直した。装置のファイルの写しで、`fd` を通して
+  5 コマンドとも断られずに `check` / `preview` / `run` まで進むことを確かめた。シミュレーション）。最初の一手だけは、コマンドでは
+  なく文で出る（11/14 朝から: 「fd calib-air with --from, the folder of those photos, and --save」。コマンドは写真のフォルダを
+  知らないため）: フォルダは上の 1 行目のもの。
+  **順番を変えない。** 先に爪を閉じて記録すると、夕方の写真は「押し付けの記録がない状態の写真」として `save` で断られる。
+  `fd tool jaw status` / `mount` / `close` の `next` も、筆先が未測定の間は `fd paint status` を先に挙げる（11/14 朝から、どの文も
+  同じ順を言う）。逆にしてしまったときは、断った結果の `next` が戻り方を言う: `fd tool jaw close --squeeze 0`（保持の記録だけを
+  外す。爪は閉じたまま）→ 上の `calib-air --from … --save` → `fd tool jaw close`。
+  `fd tool jaw close` の結果が `tool_moved: true`（爪が記録から 3 ticks より離れて止まった）のときは、筆先は未測定に戻るので、
+  実機で測り直す（`fd calib-air --save`）。`--adopt` は、筆と紙と下敷きが夕方のままのときだけ（ユーザーに聞く）。紙を替えた・
+  筆がずれたなら、捨て紙を置いてもらって `fd paint contact --scrap-laid --save`。
+
+### 守ること（11/13 に時間を失った理由・筆を失いかけた理由）
+
+- **筆を留めたら、動かす前に写真を 1 枚見る**（`fd snap --no-robot`。畳んだ姿勢でグリッパーと筆が写る）。どちらの爪に付いて
+  いるか、先端が指の線からどれだけ離れているかを見てから登録する。11/13 は見ないまま「指に沿って 8 cm」と登録し、実際は 17 cm
+  先に先端がある筆で 20 姿勢を飛んだ（筆が横へ出ていたので当たらなかっただけ）。
+- **可動爪に付いた筆は、爪を固定爪に押し当てて保持してから、測って描く**（`fd tool jaw mount moving_outer` → `fd tool jaw close`）。
+  開いたままだと先端は指の線の 9 cm 横、0° で止めただけでは爪のガタで数 mm 浮き、押す向きと横向きの線が飛んだ（留め直し 3 回、
+  約 2 時間）。爪を動かすと筆も動く: そのあとは必ず `fd calib-air --save`（測定の記録が付くのは `--save` を付けたときだけ。爪の
+  コマンドの `next` は `fd paint status` と `fd calib-air --tip-only --save` を挙げる: 同じ意味）。爪の間に挟んだ道具の爪は
+  動かさない（コマンドも断る）。
+- **筆先を測っていない筆では描かない。** `fd calib-air` が、まず写真で登録を確かめ、それから測る。`--no-look`（校正）と
+  `--tip-looked-at`（絵）は「グリッパーと筆が一緒に写った写真を自分で見て、登録が合っていた」という申告で、見ていないのに付けない。
+  `--force` は「基準を満たさない結果も保存する」だけ（確認は省かない）。**写真 1 枚の確認は、カメラの視線の方向のずれを見られない**:
+  `look` で断られたときに `next` に出る `fd tool set --tip=…` の数値は、視線の上に置いただけの値で、そのまま打つと次の確認は
+  通るが、実際の筆先から 9〜12 cm 離れていることがある（シミュレーション）。打つ前に、筆を定規で測ってもらう。
+- **紙の高さは、絵を描く場所に捨て紙を置いてもらって測る**（`fd paint contact --scrap-laid`）。紙は机の高さより 3〜9 mm 高く、
+  ロボットから遠いほど高い。絵の外（遠い側の端、下敷きの縁）で測ったはしごは別の高さを返し、1 時間迷った。筆がゆるいと 4 mm 高く出るので、
+  描くときと同じ状態（爪を保持、傾き 65°）で測る。`--scrap-laid` は「捨て紙を置いた」という申告: 置くのはユーザーで、
+  置いたと言われてから付ける（白紙の本番の紙と捨て紙は、写真では区別できない）。**どの筆の状態で測ったかの記録がない平面では、
+  線を 1 本も描かない**（`contact`。ファイルの日時は関係ない。`fd paint test` のはしごだけは、警告付きで描く）: 測るか、今の筆の
+  ままで測った平面なら `fd paint contact --adopt`。
+- **深さを自分で足さない。** 丸筆の筆圧は 0.6（線）と 1.2（帯）だけが当てになる。帯が細いときは `--lower-mm 1.5` まで
+  （筆圧と合わせて、最初に触れる高さの 7.5 mm 下が上限。11/13 の帯の深さ）。それでも細ければ、その場所の紙の高さを測り直す。
+- **片付けは `fd paint rest`。絵の上で `fd tool rest` を使わない。** 道具の既定の収納姿勢は筆先がキャンバスの 4 cm 内側で、
+  11/13 の朝、そこでトルクを切ったら手首が下がって筆が紙に乗った。`fd paint rest` は、筆先も、手首が下がったときの着地点も、
+  キャンバスから 3 cm 以上外になる向きへ畳んでからトルクを切る。動くコマンドのあとは撮影姿勢でトルク ON のまま保持している。
+  すでにトルク OFF で畳んであり、筆がキャンバスの 3 cm 以上外にある腕は、動かさない（`moved: false`、`chosen: as it lies`）。
+  **筆先が未測定の筆**は、登録した先端で計画するしかないので、畳める一番高い姿勢（例: 机の 80 mm 上）へ畳み、`warnings` と
+  `next`（`LOOK at the arm …`）と `say` がそう言う: 登録より長い筆はそれより低い所にある。ユーザーにアームを見てもらう。
+  **この道具を付けたままでは、どの向きにも畳めないとき**（`stage: rest`、`cannot_fold: true`。11/14 朝に修正）は、同じコマンドを
+  繰り返さない: アームはそのまま保持している。ユーザーにアームを手で支えて道具を外してもらい、外したと言われてから `fd tool detach`。
+- **速くしない・実測値を変えない。** 長い移動を 30°/s にしたら、測った筆先が計画より最大 45 mm 下がり、高さの監視が 4 回止めた
+  （20°/s にしてからは 0 回）。関節の制限 `wrist_flex=20:97` も実測（103 まで許すと、柄が腕に当たって 3.7° 手前で止まった）。
+- **描く前に `fd paint check`**（何も動かない）。11/13 は 2 つ目の水入れに届かず（旋回軸から 0.44 m。届くのは約 0.40 m）、
+  1 つの水入れが数分で濁った: 濁ったら替えてもらう。パレットを動かされたら `fd paint locate`（12 mm ずれていた）。
+  `locate` は、写真に絵の具が写っていない場所へは、絵の具の位置を移さない: 見つからなかった絵の具は元の位置のまま
+  「位置未確認」（`not_located`）になり、そこからの補充は `wells` で断られる（下の表）。結果の `picture` を 1 枚見る。
+  **パレットを大きく動かされた・回されたとき（1 cm より大きい、または見て分かるほど回っている）は、`locate` をせず、
+  元の位置に戻してもらう**（8° 回して 17 mm ずらした記録では、マゼンタが隣の紫の上に `ok` で保存された。色は比べていない）。
+  11/14 朝からは、色の塊で見つけた場所も同じ検査を受ける（パレットが 3〜6° 回っていると、隣の絵の具との境目や、はぐれた塊を
+  自分の塊と取り違えて、白い仕切りの上に位置を書いていた。保存写真での検証）: 書く場所に絵の具が写っていなければ、位置未確認。
+- **筆を付け替えた・留め直したあとは、筆に何が付いているか分からない扱いになる**（記録は道具の名前と留めた時刻ごと）。
+  最初の補充の前に、コマンドが筆を洗う（約 75 秒増える。結果の `washed_first`）。きれいだと分かっているときは
+  `fd paint brush --carries none`。
+- **時間は見積もりより長い。** 雷門は見積もり 26〜35 分に対して 50 分かかった。`fd paint preview` の `minutes` はその夜の実測から
+  作り直した値で、±25 % と見る。文字は赤が乾いてから（湿った赤の上の黒は灰色になった。25 分では乾いていなかった）。
+  濃い青と黒の薄め色（`_pale`）は 2 回目の補充からほぼ原色になる（未解決）。
+
+### 新しい筆を付けたときの順番
+
+`fd paint status` の `next` が、足りない最初の一手を言う（爪 → 筆先 → 筆の種類 → 紙の高さ）。ファイルを読むだけなので、迷ったら呼ぶ。
+爪が閉じているのに保持の記録がなく、筆先も未測定のとき（いまの装置がそう）だけは、筆先が先に出る: `fd calib-air` に `--from` と
+写真のフォルダと `--save`（**その爪の位置で撮った写真がすでにあるときだけ**。`next` はこれを文で言う: フォルダを知っているのは
+自分。なければ、同じ `next` の後半のとおり、爪を記録して閉じてから `fd calib-air --save`）。
+保持の記録ができたあとは、前の写真の保存は勧められない（別の爪の状態の写真になる。断った結果の `next` が戻り方を言う）。
+`fd paint brush` を保存したあとの `next` は `fd paint status`（11/14 朝に修正）。
+
+```bash
+FD=/home/jetson/lerobot/tazuna/fd
+$FD snap --no-robot                 # 1. 動かす前の写真（view を 1 枚見る）
+$FD tool attach --name brush --along-fingers 0.06 --pitch 65 --joint-limit wrist_flex=20:97 --joint-limit wrist_roll=-5:5
+                                    # 2. 登録。先端は写真に合う値で（--tip=x,y,z でもよい）。付け替えなら --replace
+$FD tool jaw mount moving_outer     # 3. 筆が可動爪の外側のとき（固定爪なら mount fixed で終わり。爪の間なら between）
+$FD tool jaw close --dry            #    何も動かない: 筆先がどこへ移るか、机に近づかないか
+$FD tool jaw close                  #    固定爪に当たるまで閉じ、軽く押し付けて保持（押し付けはトルクを切ると消え、次に動くコマンドが戻す）
+$FD calib-air --dry                 # 4. 計画だけ（姿勢の数、いちばん低い高さ、終わりに畳む向き）
+$FD calib-air                       #    登録の確認 → 約 35 姿勢で筆先を測る（約 3 分）。終わりは測った筆先で畳み、トルク ON（確かめられなければ畳まない: 下）
+$FD calib-air --from DIR --save     #    動かない。結果の arm.next に、その実行のフォルダ入りで出る（`fd calib-air --save` なら 1 回で測って保存）
+$FD paint brush --kind round --fine 0.6:2.7 --broad 1.2:5.0 --load-mm 140   # 5. 筆の種類（その筆の値で。平筆は --kind flat）
+$FD paint check                     # 6. 何も動かない: 絵の具・水入れ・紙の四隅と中心に届くか
+$FD paint contact --scrap-laid --paint red --save   # 7. 捨て紙を置いてもらってから。はしご 5 か所 → 写真 2 枚 → 平面
+$FD paint preview PLAN.json         # 8. 捨て紙をどけてもらってから。絵（picture）を 1 枚見る。分数とレイヤーごとの可否
+$FD paint run PLAN.json --layer 0 --dry   # 9. レイヤーごとに: 計画 → 本番。1 回は 8 分で区切られ、next のコマンドで続きから
+$FD paint run PLAN.json --layer 0
+$FD paint rest                      # 10. 片付け。筆を外したとユーザーが言ってから: fd tool detach
+```
+
+- **`fd calib-air`、`fd paint run`、`fd paint test`、`fd paint contact` は Bash の timeout を 600000 ms にして、フォアグラウンドで
+  1 回だけ呼ぶ**（11/13 の実測: `run` は最長 485 秒、`test` は最長 364 秒。`rinse` は 45 秒、`look` は 10 秒）。実行中に別の `fd` を
+  起動しない。`--max-min` を 8 より大きくしない（timeout の方が先に来る）。
+- `fd calib-air` が `look` で止まったら（登録した場所に筆先が写っていない）: 写真を 1 枚見て、登録が違えば
+  `fd tool set --tip=x,y,z`（負の数があるので `=` でつなぐ。値は定規で測ってもらう: 上の「守ること」）→ もう一度 `fd calib-air`。
+  **そのあいだ腕を畳まない**（登録より長い筆は、畳む動きで机に当たる。腕は確認の姿勢でトルク ON のまま保持している）。
+  「カメラが動いたようです」と出たら `fd calib-air --sets air,low`（カメラごと、約 5 分）。
+- **`fd calib-air` は、最初に、確認の姿勢のまま根元だけを横へ向けて、筆のない場面の写真を撮る**（11/14 朝に変更。この装置では
+  旋回 −90° か −97° = パレットの側。畳んだ腕からでも、まずそこへ行く。30 cm までの道具が届く範囲を全部「筆が隠しているかも
+  しれない」と数えるため）。**パレットの側を空けてもらう**: 戻るとき、指先はパレットと水入れの 12 cm 上を通り、登録より長い筆は
+  それより低い所を通る（シミュレーション: 9 cm 長い筆で 3.5 cm 上）。この写真の「確認の場所」から 120 px 以内に赤・橙の絵の具が
+  写っていると、確認の写真を撮らずに `look` で止まる（`look.dirty: true`。腕は横を向いたままトルク ON。筆と、その後ろの絵の具を
+  区別できないため）: **絵を白い紙で覆うか、紙をどけてもらってから**、もう一度 `fd calib-air`。黄色は見ない。横へ向けても
+  確認の場所が空かない登録（6 cm より短い道具、先端が +y 側へ 2 cm 以上の登録など。`brush_thin` は −97° の 1 つだけが通る）は、
+  動く前に `look` で断る: 自分で写真（`fd snap --exposure paper`）を見て登録を確かめたときだけ `--no-look`（どこから
+  始めても同じに断られる。畳んでからやり直しても変わらない）。回す角度と、空けておく側は、`fd calib-air --dry` の
+  `look.turn_over` に出る（11/14 午後）。**測っていない道具で実行する前に、パレットの側の水入れをどけてもらう。**
+- **`--save` なしの `fd calib-air` が `ok` で終わったら、片付ける前に、先に保存する**: 道具のファイルに測定の記録がない間は、
+  片付けの案内（結果の `arm.next`。止まったときは `next`）がいつも `FIRST` で始まり（11/14 朝から。それまでは、測った筆先が
+  登録から 3 cm より離れたときだけ）、`fd calib-air --from <その実行のフォルダ> --save`（動かない）→ そのあと `fd paint rest` の
+  順を言う（`say` も「先にこの測定結果を保存してください」と言う）。`fd paint rest` と `fd tool rest` は道具のファイルの筆先で
+  計画するので、保存の前に呼ぶと、いま畳んである腕を、未測定の登録値でもう一度、畳める一番高い姿勢へ畳み直してからトルクを切る
+  （登録が違っていた例では、実際の筆先が机の面より下になった。シミュレーション）。測った筆先では安全に畳めないときは、
+  畳まずにその場で保持して `ok: false`・`stage: end` を返す（測定の結果は出ている。`next` のとおり、保存 →
+  `fd paint rest --dry` → 本番）。
+- **筆先を確かめられなかった `fd calib-air` は、腕を畳まない**（11/14 朝に変更。それまでは登録した筆先で畳み、実際の筆先が机の
+  17 mm 下で終わって結果は `ok` だった。シミュレーション）。畳むのは、基準を満たす結果が出たとき（その筆先で）か、道具の
+  ファイルに測定の記録があって、今回の写真がそれと食い違わないとき（3 cm 以内、または写真なし）だけ。それ以外（結果が出ない、
+  基準を満たさず登録が未測定、記録から 3 cm より離れている。`--no-look` でも同じ）は、最後の写真の姿勢でトルク ON のまま
+  保持して `ok: false`・`stage: end`・`end.unconfirmed: true`（`--save` を付けていても保存しない）。`next` は
+  `LOOK at the arm and at the tool …` で始まる: **ユーザーにアームと道具を見てもらう → 道具を定規で測ってもらい
+  `fd tool set --tip=x,y,z` で登録し直す → もう一度 `fd calib-air`**（腕が今ある所から始まる）。**保持で止まったあとは、
+  畳むコマンドを打たない**（`fd paint rest` も `fd tool rest` も、登録した筆先で計画する。保持のあとに打つと、実際の筆先が
+  机の 2〜22 mm 下で `ok` になった。シミュレーション。11/14 午後から、`next` は畳むコマンドを挙げない）。先に片付けるなら、
+  ユーザーにアームを手で支えて道具を外してもらい、外したと言われてから `fd tool detach`。自分で畳む手順を組まない。
+- 帯のレイヤーが細いとき: `$FD paint run PLAN.json --layer N --lower-mm 1.5`。文字など補充を短くするレイヤー:
+  `--reload-mm 110`（書き直しの濃い黒は 60、帯は 75）。区切られた続きの `next` は、`--lower-mm` / `--reload-mm` / `--max-min` を
+  付けたまま出る（11/14 に直した。11/14 朝からは `--stop N` も: 続きも N 本目の前で終わる。`--stop` まで描き終えると、
+  `next` が「残りは `--stop` なしのコマンド」と言う）。雷門の作り直し（`python tools/paint/paintings/kaminarimon.py OUT next`）は、レイヤーごとの
+  コマンドをプランの `run` に持つ: `preview` と `run --dry` がそれを見せ、レイヤーが終わると `next` が次のレイヤーの
+  コマンドをそこから取る。呼んだオプションがプランのコマンドと違うと `warnings` に出る（`--dry` の `next` は、呼んだとおりの
+  コマンドのまま）。
+- 関節の制限を 1 つ直す: `fd tool set --joint-limit wrist_flex=20:95`（名前を挙げた関節だけが変わり、ほかは残る）。
+  1 つ外す `--joint-limit wrist_roll=none`、全部外す `--joint-limit none`。アームに適用できない範囲は保存されない。
+- そのほか: 写真 1 枚 `fd paint look`、筆を洗う `fd paint rinse`（水入れが 1 つなら `--blot-first 2` で先に吸い取る）。試し線は
+  `fd paint test --do load:red --do line:x0,y0:x1,y1:0.6`（ロボットの座標 [m]。**捨て紙の上にだけ引く**）。**キャンバスの上
+  （縁から 10 mm 以内を含む）を通る線とはしごは、`--scrap-laid` がないと `contact` で断られる**（11/14 に追加）: 捨て紙を置いて
+  もらい、置いたと言われてから付ける。付けると、絵の具を付ける前に 1 枚撮り、線の場所が白い紙でなければ何も描かずに止まる
+  （結果の `sheet`）。キャンバスの外の線には要らない。`fd paint test --help` に、新しい筆の幅と 1 回の補充で描ける長さの測り方
+  （その例の線は、遠い側の捨て紙の帯 x 0.32〜0.345 で、いまのキャンバスの外）。
+  筆を手で洗った・付け替えたときは `fd paint brush --carries none`（筆に付いている絵の具の記録を直す。ファイルだけ）。
+
+### 結果と、止まったとき
+
+結果は JSON 1 個: `ok` / `stage` / `reason` / `next`（次のコマンド）/ `say`（そのまま伝えてよい）/ `warnings` と、動くコマンドでは
+`brush`（筆をどこに残したか）。`brush.where`: `photo pose` 撮影姿勢でトルク ON（ふつうの終わり方）／`lifted` 持ち上げたが撮影姿勢へは
+行けなかった／`stopped` **持ち上げに失敗**（`lift_error` を読んで伝える）／`limp` トルク OFF／`unknown` サーボが応答しない（目で見て
+もらう）／`not moved` 動かしていない。中断・打ち切りのときも筆を上げてから結果を返す。止まった結果を見たら、同じコマンドをすぐ
+繰り返さず、`fd paint look` の写真を 1 枚見てから。`fd paint run` は、`next` のコマンドで続きの線から描く（進み具合は線 1 本ごとに保存）。
+`next` に出るコマンドは、逆引用符 1 組が、そのまま打てるコマンド 1 つ（11/14 に直した）。コマンドが値を知らない所（プランの
+ファイル、写真のフォルダ、測った数値）は、逆引用符なしの文で出る（11/14 朝に直した。例: 「fd paint preview and that file」
+「fd tool set and --tip=X,Y,Z」）: 文を読んで、自分の値でコマンドを組む。逆引用符の中に仮の名前（`LEN`、`NAME`、`LO:HI`）が
+残っているのは、ペンのコマンドの文（`fd draw`、`fd tool calibrate`）と、関節の制限を断る文だけ: そのままは打てない。
+**オプションは最後まで書く**（`paint` のサブコマンド、`calib-air`、`tool jaw`。`--scrap`、`--tip`、`--no`、`--sq` のような
+省略は `options` で断られる。11/14 朝から。申告のオプションを、省略形で通さないため）。
+
+| stage | 意味 | すること |
+|---|---|---|
+| `hardware` | 実機がロック中／アームを開けない／途中でサーボが応答しなくなった | ロックは自分で外さない（`fd hw status` を伝える）。途中で切れたとき（`brush.where: unknown`、爪なら `position_known`）は目で見てもらい、`fd state` が答えてから `next` |
+| `options` | 値や組み合わせが使えない（範囲外、`--sim` の位置、省略したオプション、筆圧＋`--lower-mm` が 7.5 mm 超、紙の高さの 6 mm より下のはしご、絵の具から 4 cm・水入れから 8 cm 以内の試し線、`--save` なしの `--force`） | `reason` を読んで直す。何も動いていない。省略のときは `next` が最後まで書いた綴りを言う。「近くてよい」「平面が違う」と分かっているときだけ `--near-palette` / `--distrust-plane` |
+| `tool` | 筆が未登録／ファイルが読めない／**筆先が未測定**／爪を動かせない留め方／**爪が道具のファイルの位置にない**（動く `fd paint`、`fd paint run --dry`、`fd calib-air`。保持していない爪は 8 ticks、保持している爪は 40 ticks まで。トルクを入れる前に断る: `brush.where` は `not moved`）／絵の具用の道具に `fd tool calibrate`・`fd draw` | `next` のとおり: `fd paint status`、`fd calib-air --save`、`fd tool jaw mount …`。爪のときは `fd tool jaw status`（爪の位置と、閉じ直すコマンドを言う）→ 閉じ直す → 筆先を測り直す（`fd calib-air --save`） |
+| `setup` `state` `camera` | 絵のセットアップ／状態ファイル（`paint_state.json`）／カメラモデルや写真が、無い・読めない・書けない | `reason` のファイルを直す。状態ファイルは進み具合の唯一の記録: 消さずにどける。ディスクは残りわずか（`df -h`） |
+| `paint` `plan`（`fd paint`） | セットアップにない絵の具／プランが読めない・別の筆や別のキャンバス用・`brush` の記載がない（どの筆用か分からない）・1 本が 1 回の補充を超える | `fd paint status`（絵の具、筆）。プランを、付いている筆で作り直す。**プランに合わせてセットアップの筆の種類を変えない**。セットアップに筆の記載がないときは、`fd paint status` の `next` の `fd paint brush …` |
+| `reach`（`fd paint check` では `check`） | 届かない（絵の具、水入れ、紙の端、試し線） | `fd paint check` の `items` と `next`。近づけてもらい、セットアップを直す |
+| `contact` | 紙の高さの記録が今の筆の状態と違う（道具の名前と留めた時刻も比べる）／**記録がない**（`run`、`run --dry`、試し線、`preview`、`check` のどれも断る）／`--scrap-laid` がない（`fd paint contact` のはしご、キャンバスの上の `fd paint test`）／線やはしごの場所が白い紙でない／読み取れない | 捨て紙を置いてもらって `fd paint contact --scrap-laid --save`（`test` は同じコマンドに `--scrap-laid`）。今の筆のまま測った平面と分かっているときだけ `fd paint contact --adopt`（申告で記録した平面が今の筆の状態と違うときは、`next` が `--adopt` をもう一度、と言う: 11/14 朝。はしごで測った記録が違うときは、測り直しだけ）。`fd paint check` がこれで断るときの `next` は、`fd paint status` と同じ「足りない最初の一手」 |
+| `wells` | 補充する絵の具の場所が「位置未確認」（前回の `fd paint locate` が、その絵の具の場所に絵の具を見つけなかった。色の塊で見つけても、書く場所に絵の具が写っていないときを含む）。`test` の `load:` / `swatch:`、`run`（`--dry` も）、`contact --paint`。何も動いていない | パレット全体が影なく写るようにして `fd paint locate` をもう一度（絵の具が少ないと見つからない: 足してもらう）。だめなら、セットアップのその絵の具の `xy` を手で直して `"located": false` を消す |
+| `locate` | 写真にパレットが十分写っていない（10 個中 6 個未満、またはずれが 3 個で一致しない）。何も保存していない | `picture` を 1 枚見る（緑の輪 = 見つけた、青 = 動いた先に絵の具がある、赤の×付き = 位置未確認）。パレット全体が写るようにして、もう一度 |
+| `look`（`calib-air`） | 登録した場所に筆先がない（腕が前の写真で隠していた候補は数えない）／**確認の場所の背景に赤・橙の絵の具が写っている**（`look.dirty: true`。確認の写真は撮っていない。腕は横を向いたままトルク ON）／腕を横へ向けられず、筆のない場面の写真を撮れない（動く前に断る）。校正の姿勢は 1 つも飛んでいない | 上の「`look` で止まったら」。畳まない。背景のときは、絵を白い紙で覆うか、どけてもらって、もう一度 `fd calib-air`。横へ向けられないときの `--no-look` は、自分で写真を見て登録を確かめたときだけ |
+| `capture` `solve` `save` `end` `load`（`calib-air`） | 撮影の途中で止まった／写真から解けない／保存の基準を満たさない・別の筆や別の爪の状態の写真／終わりに畳んでいない（**測った筆先では安全に畳めない、または筆先を確かめられなかった** = `end.unconfirmed`: その場でトルク ON）／`--from` のフォルダが読めない | `next`。`end` で `next` が `FIRST` と言うときは「先に保存、それから `fd paint rest`」の順を守る。`LOOK at the arm and at the tool` と言うときは、目で見てもらい、定規で測って `fd tool set --tip=…`、もう一度 `fd calib-air`。基準を満たさない結果を保存するなら `fd calib-air --from DIR --save --force`（動かない）。爪の状態が違う写真は `--force` でも保存されない: 測り直す（保持の記録だけが違うときは、`next` が戻り方を言う） |
+| `rest` `canvas` | `fd paint rest`: キャンバスにかからない畳み方がない／この道具を付けたままでは、どの向きにも畳めない（`cannot_fold: true`）／`fd tool rest`: 収納姿勢がキャンバスの上 | `canvas` は `fd paint rest` を使う。`rest` はトルク ON のまま紙をどけてもらい、どけたと言われてから `fd tool rest --over-canvas`。`cannot_fold` は、アームを手で支えて道具を外してもらい `fd tool detach` |
+| `plan` `move` `jaw` `close` `open`（`fd tool jaw` / `fd paint rest` / `fd ready` / `fd calib-air`） | 計画で断った（`plan`: 何も動いていない。爪なら、いまの姿勢で動かすと筆先が机に近づく。`fd ready` は、爪が記録の位置にないときもここ: `next` がその留め方の直し方を言う）／途中で止まった（`move` など: その場で保持） | `next`。爪が途中で止まったら `fd tool jaw status` → 閉じ直し → `fd calib-air --save` |
+| コマンド名（`look` `locate` `rinse` `test` `contact` `run`） | 動いている途中で止まった・中断された（爪が記録の位置にないときは、11/14 から `tool`: 上の行） | `brush` と `reason` を読む → `fd paint look` で 1 枚 → 伝える → `fd paint rest` か、`next` のコマンドで続き |
+| `start` `internal` | 始める前の検査で断られた（装置の設定、道具の関節制限など）／プログラムの誤り | `reason`（`internal` は `trace` も）を伝える。動いたあとなら `fd state` で姿勢を見て `fd paint rest` |
+
+- 練習（実機に触れない）: `fd --sim paint status`、`fd --sim paint run PLAN.json --layer 0`、`fd --sim calib-air --dry`、
+  `fd --sim tool jaw close --dry` など。**`--sim` は `fd` のすぐ後ろに書く**（`fd paint --sim status` は断られ、`next` に正しい綴りが出る。
+  `--si` のような省略も断られる。`fd calib-air --sim` の `next` だけは、まだ `fd --sim calib-air` と出て、そのままでは断られる:
+  `--dry` を足す）。
+  シミュレーションにはカメラがない: `locate`、`contact` の読み取り、`calib-air` の撮影はできず（`calib-air` は `--dry` か `--from` だけ）、
+  `fd paint test --scrap-laid` も紙を見ずに描く（`sheet` は null。`warnings` に出る）。
+  シミュレーションのアームは毎回、旋回 20° の収納姿勢（＝キャンバスの上）から始まるので、`fd --sim tool rest` は `canvas` で断られる:
+  畳み方の予行は `fd --sim paint rest --dry`。シミュレーションの状態と絵は木の外（`/tmp/tazuna_sim_<uid>/…`）に残る。
+  **シミュレーションの成功は実機の成功ではない**（絵の具、紙、筆のしなり、接触の力は再現していない）。
 
 ## 定型外の作業: 時間を失わないために
 
@@ -183,11 +422,12 @@ $FD tool rest                                      # 片付け（park は使え�
 
 ## 安全（必ず守る）
 
-- 実機が動くコマンド（`do` / `pick` / `take` / `ready` / `park` / `bench` / 低レベル全般）は、ユーザーが実機操作を
-  頼んだときだけ。試すだけなら `fd --sim ...`（シミュレーション）か `--dry`（計画のみ）。
+- 実機が動くコマンド（`do` / `pick` / `take` / `ready` / `park` / `bench` / `draw` / `paint` / `calib-air` / `tool jaw close` /
+  低レベル全般）は、ユーザーが実機操作を頼んだときだけ。試すだけなら `fd --sim ...`（シミュレーション）か `--dry`（計画のみ）。
   `--sim` はサーボに触れないが、`--frame 画像` を付けないと**実カメラを開いて焦点・露出を固定する**（撮影もする）。
   `--frame` は `--sim` か `--dry` と一緒のときだけ使える（保存画像で実機は動かせない: 拒否される）。
   `fd --sim draw` / `fd --sim tool calibrate` は紙もカメラもシミュレーションで、実カメラを開かない。
+  `fd --sim paint …` / `fd --sim calib-air` / `fd --sim tool jaw` も実カメラを開かない（カメラなしで動く）。
   `fd --sim park` / `fd --sim repl` の終了は、実カメラの設定（自動露出へ戻す）に触れない（11/12 に修正）。
   設定や校正を書き換えるコマンド（`config --set` / `calib-fit` / `calib-roll` / `table-fit` / `ref`）と `camera` は、`--sim` を
   付けると断られる（11/13 に修正。それまでは `--sim` でも実機の設定ファイルを書き換えていた）。結果だけ見るなら `--dry`。
@@ -197,14 +437,24 @@ $FD tool rest                                      # 片付け（park は使え�
 - `fd park` と、箱が腕の陰のときの畳み込みは、机の上の物を見ずに収納姿勢へ下ろす。`take` はその場所（ロボット
   正面、爪先が x 約 0.18・y 約 0.01）の 4 cm 以内には物を置かないが、ほかの理由でそこに物があるときは
   `fd park` の前にどけてもらう。
-- `fd torque off` は腕が落ちる。終了は必ず `fd park`（ツールが付いているときは `fd tool rest`）。
+- `fd torque off` は腕が落ちる。終了は必ず `fd park`（ツールが付いているときは `fd tool rest`、筆と絵があるときは `fd paint rest`）。
 - ユーザーがテレオペ中は実機コマンドを実行しない（/dev/ttyACM0 を奪わない）。
+- **実機のロック（`fd hw lock --reason "…"` / `fd hw status` / `fd hw unlock`）。** ロック中は、このフォルダのハーネスはサーボも
+  カメラも開かず、実機のコマンドは `stage: hardware` で断られる（何も動かない。アームの姿勢とトルクはそのまま）。断るときの
+  `next` は `fd hw unlock` を挙げるが、**外すのは、ユーザーが「実機を使ってよい」と言ったときだけ**。`--sim` を付けた
+  `hw lock` / `hw unlock` は断られる（ロックは実機そのもののもので、`--sim` では守られない。`fd --sim hw status` は読める）。
+  ロック済みの装置にもう一度 `fd hw lock` しても、最初の理由と時刻が残る（結果の `already`）。
+- `--sim` は `fd` のすぐ後ろ、コマンドの前に書く（`fd --sim paint status`）。`paint` / `calib-air` / `tool jaw` の後ろに書いた
+  `--sim` は断られる（実機のコマンドとして読まれてしまうため）。
 - 実機のコマンドは、必ず `/home/jetson/lerobot/tazuna/fd` から実行する。同じ PC にあるほかのコピー（取り出し直したもの、
-  作業用の写し）は、いま付いている道具の登録（`tool_active.json`）を知らないので、`park` や `ready` でペンを机に押し込む。
-  ほかのコピーでは `--sim` だけ。
+  作業用の写し）は、いま付いている道具の登録（`tool_active.json`）を知らないので、`park` や `ready` でペンや筆を机に押し込む。
+  **古いコピーは実機のロックも知らない**: `fd hw status` の `copies_without_lock`（11/14 の時点で 14 個: 隣の `fable_direct_dev`
+  など 5 個、`jetharness_work/` の下の 6 個と、**このフォルダの中の 3 個** = `tests/refs/patches/motion-safety/snap1`・`snap3`、
+  `backups/v1_code`）にあるフォルダの `fd` やスクリプトは、ロック中でもサーボとカメラを開く。ロック中は、そこからは
+  何も実行しない。ロックしていないときも、ほかのコピーでは `--sim` だけ。
 - LeRobot の校正プロンプト（"use file"）は受けない。サーボ EEPROM の校正はこのアームの基準値で、
   `my_follower_arm.json` とは一致しない。上書きすると全座標が狂う。
 - 速度段（`--tier normal|fast`）は `fd bench --tier T --accept` が実機で合格したものだけ使える。
 
-詳しい説明・調整方法・朝の実機確認手順: [docs/MANUAL.md](docs/MANUAL.md)。設計と根拠: [docs/DESIGN.md](docs/DESIGN.md)。
+詳しい説明・調整方法・朝の実機確認手順: [docs/MANUAL.md](docs/MANUAL.md)（絵の具は 11 章）。設計と根拠: [docs/DESIGN.md](docs/DESIGN.md)。
 概要: [README.md](README.md)。プログラムは `tools/機能/` に分かれています（一覧は [tools/README.md](tools/README.md)）。

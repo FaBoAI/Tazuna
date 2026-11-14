@@ -465,6 +465,7 @@ class _Run:
         self.q_photo = None
         self.notes = []
         self.reserved = []            # rectangles of paper kept free for a later stage (the direction test)
+        self._jaw_asked = False       # the jaw was compared with the tool file (power(): once per command)
 
     # -- kinematics
     def tip(self, q=None):
@@ -502,6 +503,15 @@ class _Run:
 
     # -- motion
     def power(self):
+        """Torque on (the arm holds where it is) and the speed tier's servo profile. Before the first time, and
+        before the torque comes on, the jaw is compared with the tool file (tooling.jaw_in_place: reads only): the
+        tip offset of a tool holds for the jaw position the file records, and a jaw that stands elsewhere is a
+        refusal (SafetyError) with the arm exactly as it was found. `fd ready` and the painting commands asked
+        that since the review of 2026-11-13; `fd draw` and `fd tool calibrate` switched the arm on without it. A
+        tool without a recorded jaw position, or recorded on the fixed jaw, is not compared (as everywhere)."""
+        if not self._jaw_asked:
+            TL.jaw_in_place(self.arm, self.tool)      # (SafetyError: nothing was switched on or written)
+            self._jaw_asked = True
         if not self.arm.is_torqued():
             self.arm.torque_on()
             arm_sleep(self.arm, 0.3)
@@ -894,6 +904,27 @@ def _stale(tool, key: str) -> bool:
             or abs(float(pitch) - float(tool.pitch_deg)) > 0.5)
 
 
+# A pen command that was refused because the jaw stands elsewhere than the tool file says (_jaw_refused)
+JAW_REFUSED_JA = ("爪が、ツールを登録したときの位置からずれているため、{what}を始めませんでした（ツールの先端は、記録の位置には"
+                  "ありません）。fd tool jaw status で爪の位置を確かめ、next のとおりに直してください。")
+
+
+def _jaw_refused(run: _Run, e) -> str | None:
+    """The `next` of a pen command that was refused because the jaw stands elsewhere than the tool file says
+    (tooling.jaw_in_place, asked by _Run.power before the torque comes on), or None for any other stop.
+
+    The refusal names the way out for THAT tool in its last sentence ("... Next: `fd tool jaw status` ...":
+    tooling._jaw_elsewhere), and `fd ready` hands that sentence on as its next since round 2. Here next and say
+    were the general ones of a stop on the way ("look at the reason and at `fd state`", 「校正の途中で止まりました」):
+    nothing in either named the jaw (round 3, 2026-11-14). Only for a refusal before anything moved."""
+    why = str(e)
+    if run.moved or not isinstance(e, SafetyError) or "fd tool jaw" not in why:
+        return None
+    way = why.partition("Next: ")[2].strip()
+    return "nothing moved. " + (way[0].upper() + way[1:] if way else
+                                "`fd tool jaw status` shows where the jaw stands and what the tool file records")
+
+
 def _finish(res: dict, run: _Run, end: str = "aside"):
     res["pen"] = run.retreat(end)
     res["timings"] = {**run.tm.marks, "total": run.tm.total()}
@@ -991,9 +1022,10 @@ def calibrate(sess: PenSession, stages=STAGES, opts: PenOptions | None = None, m
         res["say"] = (f"校正を止めました（{e.stage}: {e.reason}）。" +
                       ("写真では線の有無を判定できないため、これ以上深くは下ろしていません。" if e.stage == "visual" else ""))
     except MOTION_ERRORS as e:
+        jaw = _jaw_refused(run, e)
         res.update(ok=False, stage=stage, reason=f"{type(e).__name__}: {e}",
-                   next="look at the reason and at `fd state`; the pen was lifted when that was possible (see \"pen\")")
-        res["say"] = f"校正の途中で止まりました（{stage}: {type(e).__name__}）。"
+                   next=jaw or "look at the reason and at `fd state`; the pen was lifted when that was possible (see \"pen\")")
+        res["say"] = JAW_REFUSED_JA.format(what="校正") if jaw else f"校正の途中で止まりました（{stage}: {type(e).__name__}）。"
     except (KeyboardInterrupt, SystemExit) as e:
         # Ctrl-C, a cancelled or timed-out tool call (fd turns SIGTERM into this): the pen must not stay pressed on
         # the paper with the torque on. Fall through to _finish, which lifts it and reports where it is.
@@ -1570,9 +1602,10 @@ def draw(sess: PenSession, drawing, opts: PenOptions | None = None, modules=None
         res.update(ok=False, stage=e.stage, reason=e.reason, next=e.next, **{k: v for k, v in e.detail.items()})
         res["say"] = f"描画を止めました（{e.stage}: {e.reason}）。"
     except MOTION_ERRORS as e:
+        jaw = _jaw_refused(run, e)
         res.update(ok=False, stage=stage, reason=f"{type(e).__name__}: {e}",
-                   next="look at the reason and at `fd state`; the pen was lifted when that was possible (see \"pen\")")
-        res["say"] = f"描画の途中で止まりました（{stage}: {type(e).__name__}）。"
+                   next=jaw or "look at the reason and at `fd state`; the pen was lifted when that was possible (see \"pen\")")
+        res["say"] = JAW_REFUSED_JA.format(what="描画") if jaw else f"描画の途中で止まりました（{stage}: {type(e).__name__}）。"
     except (KeyboardInterrupt, SystemExit) as e:  # see calibrate
         res.update(ok=False, stage=stage, reason=f"interrupted ({type(e).__name__}) during the stage {stage}", interrupted=True,
                    next=INTERRUPTED_NEXT)
