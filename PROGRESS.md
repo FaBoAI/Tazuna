@@ -15,6 +15,7 @@ YouTube の FaBo チャンネル、再生リスト「Tazuna」にあります。
 - [[Tazuna開発記] Day1 Fable5.2 Direct用のRoboハーネスを開発](https://www.youtube.com/watch?v=vImrWLpaMcs&list=PLS2xQbZhQGBk)
 - [[Tazuna開発記] マジックペンで絵を描いてみる](https://www.youtube.com/watch?v=Fakua6h1_IE&list=PLS2xQbZhQGBk)
 - [[Tazuna開発記] 雷門を描いてみる](https://www.youtube.com/watch?v=cK-lYeAAcFo&list=PLS2xQbZhQGBk)（2026-11-13 の夕方に細い丸筆で描いた水彩の「雷門」と、そのあとのハーネス更新の報告。約 2 分）
+- [[Tazuna開発記] Fable5.2にSO-101に水彩絵の具で赤ベコを描かせてみる](https://www.youtube.com/watch?v=n0kHPno6wLo&list=PLS2xQbZhQGBk)（2026-11-13 に平筆で描いた水彩の「赤べこ」。赤 26 本と黒 8 本）
 
 ## いまできること
 
