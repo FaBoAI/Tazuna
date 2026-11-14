@@ -10,9 +10,12 @@ this order, with the checks that were missing:
 
 1. LOOK FIRST. The arm goes to a pose in which the camera sees the gripper and the tool and which keeps a
    tool of unknown length off the table (aircal.look_pose: fingertip >= 12 cm up, fingers <= 30 deg down; the
-   module text of aircal says which tools that covers). The WAY there and the turn aside for the first photo
-   pass over the table at that height, where a tool longer than registered passes lower: the plan, the look's
-   record and a refused look name the side that must be clear (_side_note). One photo of the scene without the tool there, one in the
+   module text of aircal says which tools that covers). Wherever the way there turns the base (for the first
+   photo it always does), the tool is first lifted 10 cm straight up, and the arm comes straight down afterwards
+   (aircal.look_way, 2026-11-14 evening: until then the look pose was turned at its own height, and a tool longer
+   than registered passed 12 .. 47 mm above the table over the rig's water dish). What has to be clear is the
+   place where the arm comes down for the first photo: the plan, the look's record and a refused look name it
+   (_side_note). One photo of the scene without the tool there, one in the
    pose; when no tip candidate lies within 60 px of where the REGISTERED tip would be seen, the command stops
    there: the arm goes nowhere else. The first photo is taken with the look pose turned aside about the base
    (aircal.look_aside), wherever the arm stood, and the arm turns back for the second; it is taken where the
@@ -416,15 +419,31 @@ def _store_first(stores: str, far_m: float | None) -> str:
             "with the registered tip, which the photos contradict. THEN ")
 
 
+def _rise_mm(flown: dict):
+    """What aircal.fly_look_way measured before the base turned: the least any point of a tool had gained (mm)."""
+    v = flown.get("rise_at_turn_m")
+    return None if v is None else round(float(v) * 1000.0, 1)
+
+
 def _side_note(aside: dict | None) -> str | None:
-    """What the turn aside for the photo "before" passes over (round 3b, U2): said in the --dry plan, in the look's
-    record and after a refused look, because the turn happens BEFORE the look has judged the registered tip."""
+    """Where the first look takes the arm for the photo "before", and how it gets there (round 3b, U2): said in the
+    --dry plan, in the look's record and after a refused look, because it happens BEFORE the look has judged the
+    registered tip. Since the evening of 2026-11-14 the base turns only with the tool lifted (aircal.look_way): what
+    the tool passes over on the way is no longer what has to be cleared, the place where it comes down still is."""
     if not aside:
         return None
+    import aircal as AC
+    lift = AC.LOOK_LIFT_M * 100.0
+    at = aside.get("fingertip_xy")
+    where = f" (the fingertip 12 cm above x {at[0]:.2f}, y {at[1]:.2f} m, the fingers pointing on outwards)" if at else ""
     return (f"for the photo before, the arm goes to the look pose turned {aside['turn_deg']:+g} deg about its base (pan "
-            f"{aside['pan_deg']:.0f} deg) and back, with the fingertip 12 cm above the table; a tool longer than registered "
-            "passes lower. Before a tool that was not measured is run, that side of the table must be clear of anything "
-            "higher than about 2 cm (on the rig of 2026-11-13: the water dish and the palette)")
+            f"{aside['pan_deg']:.0f} deg) and back. Its base turns only after the gripper was lifted {lift:.0f} cm straight up, "
+            f"and the arm comes straight down afterwards: whatever is taped to the gripper, of any length, passes over that "
+            f"side of the table at least {lift:.0f} cm above the table ({lift:.0f} cm above where it hung before the lift). "
+            f"Where the arm comes down for the photo{where}, the tool hangs as it does at the look pose itself, and one "
+            "longer than registered hangs lower. Before a tool that was not measured is run, that place and the 20 cm "
+            "beyond it must be clear of anything higher than about 2 cm; what the tool only passes over on the way need "
+            "not be moved unless it is higher than about 6 cm")
 
 
 def _hold_next(paint: dict, again: str, pan_deg: float | None, measured: bool) -> str:
@@ -1109,7 +1128,8 @@ def _save(res: dict, mode: str, fit: dict, verdict: dict, tool, sim: bool, force
 def _look_plan(arm, tool, cam, q0) -> dict:
     """The first look, planned from where the arm stands (no motion): {"pose" (aircal.look_pose), "aside": None
     or aircal.look_aside (the arm is turned aside about its base for the photo "before"), "plan": the way to
-    the look pose (from the aside pose when there is one), "near": the arm stands within LOOK_SAME_DEG of the
+    the look pose (from the aside pose when there is one; an aircal.look_way result: where the base turns, the
+    tool is lifted first), "near": the arm stands within LOOK_SAME_DEG of the
     look pose, "hides": a photo taken where it stands would not show the place of the look without the arm (it
     is near, or the camera model sees arm or tool there: aircal.look_hidden)}. SafetyError when there is no pose,
     no turn or no safe way.
@@ -1118,13 +1138,13 @@ def _look_plan(arm, tool, cam, q0) -> dict:
     from it (lift, elbow, wrist) stood with its tool over the place of the look all the same, and paint that the
     tool hid in the photo before passed for the tip in the look photo (aircal: silhouette)."""
     import aircal as AC
-    import tooling as TL
     from robot import SafetyError
     pose = AC.look_pose(arm, tool, cam)
     near = float(np.max(np.abs(np.asarray(q0, dtype=float) - pose["q"]))) <= math.radians(LOOK_SAME_DEG)
     hides = cam is not None and (near or AC.look_hidden(cam, q0, pose["q"], tool.tip_offset) is not None)
     aside = AC.look_aside(arm, tool, cam, q0, pose["q"]) if hides else None
-    plan = TL.plan_free_move(arm, tool, q0 if aside is None else aside["q"], pose["q"])
+    # (the way to the look pose is aircal.look_way: wherever it turns the base, the tool is lifted first)
+    plan = AC.look_way(arm, tool, q0, pose["q"]) if aside is None else aside["back"]
     dip = AC.unknown_tool_dip(arm, tool, _waypoints(plan))
     if dip:
         raise SafetyError(f"the way to the look pose would bring a tool of unknown length lower than it is now: a tip "
@@ -1151,35 +1171,39 @@ def _look(arm, tool, cam, photo, out_dir: str, mode: str, log) -> dict:
     The photo "before" is what keeps paint on the sheet from passing for the tool tip. It is taken where the
     arm stands, before anything moves; an arm that stands at the look pose, or where the camera model sees arm
     or tool at the place of the look, is turned aside for it with the torque on (aircal.look_aside) and comes
-    back: what the arm hides in the photo before would be "new" in the look photo. For the same reason nothing
+    back: what the arm hides in the photo before would be "new" in the look photo. Both ways are flown by
+    aircal.fly_look_way: the base turns only with the tool lifted 10 cm straight up (asked of the measured arm),
+    and the arm comes straight down onto the pose. For the same reason nothing
     that the look photo shows where the arm stood for the photo before can make the look pass
     (aircal.look_check, q_bg). Without a photo before (no camera model: nothing to compare with) the look is
     not checked."""
     import aircal as AC
-    import tooling as TL
+    from robot import MotionAborted, SafetyError
     q0 = arm.read_q()
     lp = _look_plan(arm, tool, cam, q0)
     pose, aside, plan = lp["pose"], lp["aside"], lp["plan"]
     out = {"pose": {"fingertip": pose["fingertip"], "pitch": pose["pitch"],
                     "q_deg": [round(math.degrees(float(v)), 1) for v in pose["q"]]},
            "photo": None, "photo_before": None, "before": None, "checked": False}
-    before, q_before, powered = None, None, False
+    before, q_before, powered, moved = None, None, False, False
     if aside is not None:
         jaw = _power_rigid(arm)
         powered = True
         if jaw is not None:
             out["jaw"] = jaw
-        TL.free_move(arm, aside["q"], AC.LOOK_SPEED_DEG_S, settle=0.5, plan=aside["plan"])
+        flown = AC.fly_look_way(arm, aside["q"], way=aside["plan"])     # (lift, turn the base, straight down)
+        moved = True
         arm._sleep(0.35)
         q_before = arm.read_q()
         before = photo()                                    # the scene without the tool at the look pose
         stood = ("it stood at the look pose" if lp["near"] else
                  "where it stood the camera could have seen it, or a tool taped to it, at the place of the look")
         out["before"] = {"taken": f"at the look pose turned aside about the base ({stood})", "turn_deg": aside["turn_deg"],
-                         "pan_deg": aside["pan_deg"], "tip_in_picture": aside["tip_in_picture"], "over": _side_note(aside)}
+                         "pan_deg": aside["pan_deg"], "tip_in_picture": aside["tip_in_picture"], "over": _side_note(aside),
+                         "way": flown["via"], "rise_at_turn_mm": _rise_mm(flown)}
         out["stands"] = "aside"
         log(f"look: {stood}; the look pose turned {aside['turn_deg']:+g} deg aside (pan {aside['pan_deg']:.0f} deg) for the "
-            "photo before: the arm passed over that side of the table")
+            f"photo before: {flown['via']}")
     elif not lp["near"]:
         q_before = q0
         before = photo()                                    # ... taken before anything moves
@@ -1203,7 +1227,15 @@ def _look(arm, tool, cam, photo, out_dir: str, mode: str, log) -> dict:
         jaw = _power_rigid(arm)
         if jaw is not None:
             out["jaw"] = jaw
-    TL.free_move(arm, pose["q"], AC.LOOK_SPEED_DEG_S, settle=0.5, plan=plan)
+    try:
+        flown = AC.fly_look_way(arm, pose["q"], way=plan)   # (where the base turns: lifted first, then straight down)
+    except SafetyError as e:
+        if not moved:
+            raise
+        # (the arm stands turned aside: this is no refusal "before anything moved")
+        raise MotionAborted(f"the way back to the look pose could not be flown from where the arm stands ({e}); the arm "
+                            "holds there") from e
+    out["way"] = {"via": flown["via"], "rise_at_turn_mm": _rise_mm(flown)}
     arm._sleep(0.35)
     q = arm.read_q()
     img = photo()
@@ -1248,8 +1280,8 @@ def _look_refusal(res: dict, look: dict, tool, mode: str, again: str, paint: dic
     aside = look.get("dirty") and look.get("stands") == "aside"
     over = (look.get("before") or {}).get("over")
     stay = ("The arm holds at the look pose" + (" turned aside about its base" if aside else "") + " (torque on). That pose "
-            "keeps a tool of up to 10 cm in any direction (20 cm along the fingers) off the table; the way to it and the "
-            "turn aside pass over the table with the fingertip 12 cm up, where a longer tool passes lower"
+            "keeps a tool of up to 10 cm in any direction (20 cm along the fingers) off the table; on the way to it the "
+            "base turns only with the tool lifted 10 cm straight up, and the arm comes straight down onto the pose"
             + (" (" + over + ")" if over else "") + ". A fold is planned with the registered tip: "
             "fold only when the photo shows the tool no longer than "
             "registered (" + _fold_hint(paint, pan_deg=_pan_of(res.get("arm"))) + ")")
@@ -1757,7 +1789,8 @@ def _run(a, mode: str, names, arm, cam, photo, out_dir: str, log, paint: dict | 
             res.update(ok=False, stage=state["stage"], reason=reason,
                        next=("nothing moved for the look. For this registration no photo of the scene without the tool can "
                              "be taken: no turn of the look pose keeps the arm and what a tool can reach clear of the place "
-                             "of the look, from any start pose, so folding the arm first does not help. Either look "
+                             "of the look and can be flown back from with the tool lifted (the reason says which), from any "
+                             "start pose, so folding the arm first does not help. Either look "
                              "yourself (`fd snap --exposure paper` shows gripper and tool; `fd tool status` what is "
                              "registered) and then run the command with --no-look, or measure the tool with a ruler and "
                              "register it anew"

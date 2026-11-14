@@ -7,9 +7,10 @@
   fd paint check                       no motion: is every well, dish, the blotting strip and the canvas in reach?
   fd paint look                        to the photo pose, one photo
   fd paint locate [--dry]              photo; find the paint blobs again (the palette gets pushed or turned); stored
-                                       only when the photo shows the palette; no well is put where the photo shows no
-                                       paint (it keeps its place, "located": false, and nothing loads from it); the
-                                       places before are kept in the file
+                                       only when the photo shows the palette and the wells agree on ONE move of it; no
+                                       well is put where the photo shows no paint, or paint of another colour than the
+                                       well showed when it was last written (it keeps its place, "located": false, and
+                                       nothing loads from it); the places before are kept in the file
   fd paint test --do ACTION ...        test strokes on scrap paper (`fd paint test --help`: how a new brush is measured);
                                        on the canvas of the set-up only with --scrap-laid, after a look at the sheet
   fd paint contact --scrap-laid [--save]   measure the paper height: ladders of strokes on a SCRAP SHEET laid over
@@ -230,9 +231,10 @@ def build_parser():
     s = sub.add_parser("look", help="to the photo pose, one photo")
     _tip_word(s)
     s = sub.add_parser("locate", help="photo; find the paint blobs again (the palette gets pushed) and store where they "
-                                      "are: only when most wells are found by a blob of their own; a well without "
-                                      "paint in the photo keeps its place and is marked not located; the places "
-                                      "before are kept in the file (\"previous_xy\")")
+                                      "are: only when most wells are found by a blob of their own and those agree on "
+                                      "one move of the palette; a well without paint in the photo, or with paint of "
+                                      "another colour than it showed before (\"hsv\"), keeps its place and is marked not "
+                                      "located; the places before are kept in the file (\"previous_xy\")")
     s.add_argument("--dry", action="store_true", help="a photo from where the arm stands; show what would change; "
                                                       "nothing moves, nothing is written")
     _tip_word(s)
@@ -936,6 +938,20 @@ def _locate_body(sess):
     if res["photo"]:
         res["picture"] = PS.locate_picture(pt.last_photo, cam, sess.setup, found, pt.tz,
                                            os.path.splitext(res["photo"])[0] + "_wells.jpg")
+    if not usable and found.get("apart_mm"):
+        # Nothing is stored: the wells that took a blob do not agree on one move of the palette. One of them took
+        # paint that is not its own (magenta the edge of violet's, with the palette's record 8 deg and 17 mm off),
+        # and the fit it bent put three more wells 12 to 20 mm beside the middle of their paint (2026-11-14).
+        apart = "、".join(f"{name}（{d:g} mm）" for name, d in found["apart_mm"].items())
+        sess.refused_say = ("絵の具の位置は保存しませんでした。見つけた絵の具どうしが、パレットの 1 つの動き（回転とずれ）に合いません"
+                            f"（{apart}）。パレットを大きく動かした・回したあとでは、隣の絵の具を取り違えることがあります。パレットを"
+                            "元の位置に戻してもらうか、セットアップの絵の具の位置（wells）を手で直してから、もう一度 fd paint locate を"
+                            "実行してください。写真（picture）で、灰色の輪（セットアップの位置）と絵の具を見比べられます。"
+                            "セットアップは元のままです。")
+        raise PS.Refusal("locate", f"the wells were not stored: {why}. The set-up keeps the places it had",
+                         "put the palette back where the set-up has it (the picture, \"picture\", shows where: grey rings = "
+                         "the wells of the set-up, yellow dots = the paint that was found), or correct the wells in the "
+                         "set-up by hand; then `fd paint locate` again")
     if not usable:
         # Nothing is stored: one photo without the palette, or with one stray blob, used to move every well.
         sess.refused_say = (f"絵の具の位置は保存しませんでした。写真で見つかった絵の具は {total} 個のうち {n} 個だけで、パレットとは"
@@ -945,10 +961,21 @@ def _locate_body(sess):
                          "found): is the whole palette in the photo, and unshadowed? Then `fd paint locate` again; a "
                          "palette that was moved more than 3 cm needs its wells written into the set-up by hand")
     lost = list(found["not_located"])
+    other = list(found.get("other_colour") or [])
     by_paint = [name for name, w in found["wells"].items() if w["by"] == "paint"]
+    if other:
+        # (a well is never written onto paint of another colour than the one it has on record)
+        res.setdefault("warnings", []).append(
+            "another colour: " + "; ".join(
+                f"{name} would be written where the photo shows hsv {found['wells'][name]['other_colour']['seen']}, and has "
+                f"{found['wells'][name]['other_colour']['on_record']} on record" for name in other)
+            + ". Such a well is not written: it keeps its place and is not located. When the palette was turned or "
+              "pushed far, put it back; when the well was refilled with another paint, take its \"hsv\" out of the "
+              "set-up; then `fd paint locate` again")
     if lost:
         res.setdefault("warnings", []).append(
-            f"not located: {', '.join(lost)}. The photo shows no paint where the palette's move puts "
+            f"not located: {', '.join(lost)}. The photo shows no paint "
+            + ("of its colour " if other else "") + "where the palette's move puts "
             + ("this well: it keeps" if len(lost) == 1 else "these wells: they keep")
             + " the place the set-up had, marked \"located\": false, and no paint is loaded from "
             + ("it" if len(lost) == 1 else "them") + " (stage \"wells\") until `fd paint locate` finds "
@@ -962,6 +989,8 @@ def _locate_body(sess):
                 well["xy"] = w["xy"]
                 well.pop("located", None)
                 well.pop("expected_xy", None)
+                if w.get("hsv"):                # (the colour it shows there: the next photo holds the well to it)
+                    well["hsv"] = [int(v) for v in w["hsv"]]
             else:                   # no paint in the photo where the palette's move puts it: it keeps its place,
                 well["located"] = False         # and nothing is loaded from it (PS.require_wells)
                 well["expected_xy"] = w["expected_xy"]      # (where the next photo looks for it)
@@ -977,6 +1006,8 @@ def _locate_body(sess):
                    "絵の具があることを確かめて置きました。" if by_paint else "")
                 + (f"{len(lost)} 個（{'、'.join(lost)}）は写真で確認できなかったので、元の位置のまま「位置未確認」にしました。"
                    "位置を確認するまで、その絵の具の補充は断ります。" if lost else "")
+                + (f"このうち {len(other)} 個（{'、'.join(other)}）は、置く場所に、記録と違う色の絵の具が写っていました"
+                   "（隣の絵の具の上に位置を書かないためです。パレットを大きく動かしたときは、元の位置に戻してください）。" if other else "")
                 + ("セットアップに保存しました（元の位置は previous_xy に残してあります）。" if not a.dry else "保存はしていません。"))
 
 

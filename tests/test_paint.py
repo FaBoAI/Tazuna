@@ -46,6 +46,10 @@ its tip under the fingers, the flat brush of that morning, and a brush taped far
    arm left as it lies is not said to have been folded; no option of a sub-command is abbreviated; and every
    command a result prints in backticks, or begins its next with, works AS IT IS TYPED: the parsers take it with
    nothing filled in, no word of it is a placeholder (PLAN, DIR, x,y, P), none is a bare command name (zy).
+ - what the last verification left open (2026-11-14 evening, test 57): `locate` stores no well on its NEIGHBOUR's
+   paint. Every well that took a blob must lie where the other wells' blobs put it, else nothing is stored (the
+   verifier's case on a drawn palette and on the photos it happened on, skipped on a clone); and a well remembers
+   the colour it showed ("hsv") and is never written onto paint of another colour.
 What is IN-SAMPLE is said where it is: the time model against the five calls it was fitted to (test 22, with the
 leave-one-out figures), the contact reading against the photos its rule was derived from (16) and against
 synthetic photos drawn with the rule's inverse (17, 18, 29), the bare-paper look against three of the photos its
@@ -358,6 +362,15 @@ def sim_arm(t="thin", q=None, torque=False):
         bus.sleep(0.6)
     bus.trace.clear()
     return arm, bus
+
+
+def raises_value(fn, *a, **k):
+    """The ValueError (or SafetyError) fn raises; an AssertionError when it raises none."""
+    try:
+        fn(*a, **k)
+    except (ValueError, SafetyError) as e:
+        return e
+    raise AssertionError(f"{getattr(fn, '__name__', fn)} did not refuse")
 
 
 def painter(t="thin", setup=None, **kw):
@@ -4870,6 +4883,190 @@ def test_56_the_options_of_the_paint_commands_are_typed_in_full():
     assert r["_rc"] == 1 and r["ok"] is False and r["stage"] == "options" and "--scrap-laid" in r["next"], r
     r = fd_cmd("--sim", "paint", "contact", "--scrap-laid", "--dry")
     assert r["_rc"] == 0 and r["ok"] is True and r["stage"] == "planned", r
+    reset_state()
+    use_setup()
+
+
+NEIGHBOUR_PHOTOS = ("173916_look.jpg", "172135_look.jpg", "174247_test.jpg", "175520_run.jpg")      # (where the last verifier met it)
+
+
+def displaced(s, turn_deg, shift, about=None) -> dict:
+    """Set-up s with its wells turned by turn_deg about the well `about` (None: about the palette's middle) and pushed
+    by `shift` (m): what the set-up looks like, against a photo, after the palette was moved the other way."""
+    t = copy.deepcopy(s)
+    pts = np.array([w["xy"] for w in s["wells"].values()], dtype=float)
+    c = pts.mean(axis=0) if about is None else np.array(s["wells"][about]["xy"], dtype=float)
+    a = math.radians(turn_deg)
+    rot = np.array([[math.cos(a), -math.sin(a)], [math.sin(a), math.cos(a)]])
+    for name, q in zip(s["wells"], (pts - c) @ rot.T + c + np.array(shift, dtype=float)):
+        t["wells"][name]["xy"] = [round(float(q[0]), 4), round(float(q[1]), 4)]
+    return t
+
+
+def test_57_locate_stores_no_well_on_its_neighbours_paint():
+    """U3 of the last verification (2026-11-14). With the set-up turned 8 deg about the black well and pushed 17 mm,
+    `fd paint locate` stored magenta on VIOLET's paint (ok, saved; 4 of 2,640 turns and pushes of ten real photos):
+    the search area had cut the piece the two wells share, magenta took the middle of what was left, and that ONE pair
+    turned the fit by 6 deg (fitted -2.3 for a true -8), so red, blue and brown were written 12 to 20 mm beside the
+    middle of their paint as well. Two rules close it. (1) Every well that took a blob must lie where the OTHER wells'
+    blobs put it (LOCATE_CONFIRM_M); a result with a well that does not is not stored at all: stage "locate", next:
+    put the palette back, or correct the wells by hand. (2) A well remembers the colour it showed where it was last
+    written ("hsv" in the set-up) and is never written onto paint of another colour, whatever the fit says."""
+    use_tool("thin")
+    s = use_setup(make_setup(record=tool("thin")))
+    reset_state()
+    names = list(s["wells"])
+
+    def off_mm(found, n, truth):
+        want = truth["wells"][n]["xy"]
+        return math.hypot(found["wells"][n]["xy"][0] - want[0], found["wells"][n]["xy"][1] - want[1]) * 1000.0
+
+    # 1. two colours: what other_paint tells apart, and what it leaves alone (a statement only where both have a hue)
+    red, magenta, violet, yellow, blue, cerulean, black = ([179, 212, 141], [173, 214, 123], [133, 136, 58], [18, 179, 165],
+                                                           [113, 180, 68], [104, 245, 124], [120, 57, 40])     # (173916_look.jpg)
+    assert PS.other_paint(magenta, violet) and PS.other_paint(violet, magenta) and PS.other_paint(red, yellow)
+    assert PS.other_paint(black, red) and PS.other_paint(yellow, black) and PS.other_paint(blue, violet)
+    assert not PS.other_paint(red, [1, 229, 157]) and not PS.other_paint([1, 229, 157], red)        # (the same red, 90 minutes later)
+    assert not PS.other_paint(red, magenta) and not PS.other_paint(blue, cerulean)                  # (too near to say)
+    assert not PS.other_paint(black, [111, 92, 39]) and not PS.other_paint(blue, [117, 121, 40])    # (dark: no hue to go by)
+    # 2. the colour memory, on a palette that is drawn. A locate that stores writes what each well shows where it is
+    #    written, and the set-up with those colours is a set-up
+    pushed = palette_photo(s, (0.012, 0.0))
+    r, _ = cli("--sim", "locate", camera=lambda: pushed.copy())
+    now = json.load(open(SETUP_PATH))
+    assert check_result(r, ok=True, stage="locate")["saved"] and r["found"] == 10 and r["other_colour"] == [] and r["apart_mm"] == {}, r
+    assert all(len(w["hsv"]) == 3 for w in now["wells"].values()) and PS.check_setup(now), now["wells"]
+    hue = {n: w["hsv"][0] for n, w in now["wells"].items()}
+    assert min(hue["red"], 180 - hue["red"]) <= 4 and 20 <= hue["yellow"] <= 28 and 130 <= hue["violet"] <= 140 and 160 <= hue["magenta"] <= 170, hue
+    bad = copy.deepcopy(now)
+    bad["wells"]["red"]["hsv"] = [0, 300]
+    assert "hsv" in str(raises_value(PS.check_setup, bad))
+    # ... with the colours on record the palette is found again as before, turned and pushed (no well is held back)
+    coloured = copy.deepcopy(now)
+    for turn in (-6.0, 6.0):
+        for shift in ((0.0, 0.0), (0.008, -0.008)):
+            f = PS.relocate_wells(palette_photo(coloured, shift, turn_deg=turn), CAM, coloured, TZ)
+            assert PS.locate_usable(f) == (True, None) and f["not_located"] == [] and f["other_colour"] == [] and f["found"] == 10, (turn, shift, f)
+            assert abs(f["turn_deg"] - turn) < 0.6, (turn, shift, f["turn_deg"])
+    # ... a well that shows ANOTHER paint where it would be written is not written: violet's well refilled with yellow.
+    #    It keeps its place and its colour, nothing is loaded from it, and the result says why
+    refilled = palette_photo(coloured)
+    draw_blob(refilled, coloured["wells"]["violet"]["xy"], BLOB_BGR["yellow"])
+    r, _ = cli("--sim", "locate", camera=lambda: refilled.copy())
+    now = json.load(open(SETUP_PATH))
+    assert check_result(r, ok=True, stage="locate")["saved"] and r["other_colour"] == ["violet"] == r["not_located"], r
+    assert r["wells"]["violet"]["other_colour"]["on_record"] == coloured["wells"]["violet"]["hsv"], r["wells"]["violet"]
+    assert now["wells"]["violet"]["located"] is False and now["wells"]["violet"]["xy"] == coloured["wells"]["violet"]["xy"]
+    assert now["wells"]["violet"]["hsv"] == coloured["wells"]["violet"]["hsv"], now["wells"]["violet"]
+    assert any(w.startswith("another colour: violet") for w in r["warnings"]) and "記録と違う色" in r["say"], (r["warnings"], r["say"])
+    r, made = cli("--sim", "test", "--do", "load:violet")
+    assert check_result(r, ok=False, stage="wells") and not moved(made["bus"])
+    # ... once the operator has taken the colour out (the well holds another paint now), it is found and learnt anew
+    now["wells"]["violet"].pop("hsv")
+    use_setup(now)
+    r, _ = cli("--sim", "locate", camera=lambda: refilled.copy())
+    now = json.load(open(SETUP_PATH))
+    assert check_result(r, ok=True, stage="locate")["saved"] and r["not_located"] == [] and "located" not in now["wells"]["violet"], r
+    assert 20 <= now["wells"]["violet"]["hsv"][0] <= 28, now["wells"]["violet"]
+    # ... and the neighbour's paint. The set-up has magenta beside VIOLET's blob (its own paint is used up), violet
+    #    elsewhere: every other well says "nothing moved", so the first rule has nothing to object to. Without a colour
+    #    on record magenta is written onto violet's paint; with one, it is not written at all
+    use_setup(coloured)
+    v = coloured["wells"]["violet"]["xy"]
+    beside = copy.deepcopy(coloured)
+    beside["wells"]["magenta"]["xy"] = [round(v[0] + 0.004, 4), round(v[1] + 0.004, 4)]
+    beside["wells"]["violet"]["xy"] = [round(v[0] + 0.005, 4), round(v[1] - 0.045, 4)]
+    no_magenta = palette_photo(coloured, skip=("magenta",))
+    blind = copy.deepcopy(beside)
+    for w in blind["wells"].values():
+        w.pop("hsv")
+    f = PS.relocate_wells(no_magenta, CAM, blind, TZ)
+    assert PS.locate_usable(f) == (True, None) and f["wells"]["magenta"]["located"] and f["apart_mm"] == {}, f
+    assert math.hypot(f["wells"]["magenta"]["xy"][0] - v[0], f["wells"]["magenta"]["xy"][1] - v[1]) < 0.008, f["wells"]["magenta"]
+    f = PS.relocate_wells(no_magenta, CAM, beside, TZ)
+    assert not f["wells"]["magenta"]["located"] and f["wells"]["magenta"]["xy"] == beside["wells"]["magenta"]["xy"], f["wells"]["magenta"]
+    assert "magenta" in f["not_located"] and all(off_mm(f, n, coloured) < 2.0 for n in names if f["wells"][n]["located"]), f
+    # 3. the first rule on a palette that is drawn as the real one looked to the function: five wells in one corner,
+    #    magenta 23 cm away with its own paint out of the search area, and a piece of VIOLET's paint where the cut
+    #    piece had its middle. The set-up turned 8 deg about the black well and pushed 17 mm, as the verifier had it:
+    #    magenta takes that piece, the fit follows it (-2.3 deg for a true -8, as on the photo), and all six "agree"
+    use_setup(s)
+    mini = copy.deepcopy(s)
+    mini["wells"] = {n: s["wells"][n] for n in ("yellow", "crimson", "black", "cerulean", "green", "magenta")}
+    decoy = palette_photo(mini, skip=("magenta",))
+    draw_blob(decoy, (0.0089, 0.2506), BLOB_BGR["violet"], r=0.008)
+    case = displaced(mini, 8.0, (0.012, -0.012), "black")
+    with patched(PS, "LOCATE_CONFIRM_M", 1.0):          # (what it was: stored, magenta 27 mm from its place)
+        f = PS.relocate_wells(decoy, CAM, case, TZ)
+    assert PS.locate_usable(f) == (True, None) and f["found"] == 6 and abs(f["turn_deg"] + 2.3) < 0.5, (f["turn_deg"], f["found"])
+    assert f["wells"]["magenta"]["by"] == "blob" and 25.0 < off_mm(f, "magenta", mini) < 30.0, f["wells"]["magenta"]
+    f = PS.relocate_wells(decoy, CAM, case, TZ)         # ... the other five put magenta 27 mm from that piece: not stored
+    assert list(f["apart_mm"]) == ["magenta"] and 25.0 < f["apart_mm"]["magenta"] < 30.0, f["apart_mm"]
+    ok, why = PS.locate_usable(f)
+    assert ok is False and "do not agree on ONE move" in why and "magenta" in why and "12 mm" in why, why
+    # (the same palette with magenta's own paint in reach, turned and pushed as far as works today: all six, stored)
+    f = PS.relocate_wells(palette_photo(mini), CAM, displaced(mini, 4.0, (0.008, -0.008), "black"), TZ)
+    assert PS.locate_usable(f) == (True, None) and f["found"] == 6 and f["apart_mm"] == {} and abs(f["turn_deg"] + 4.0) < 0.6, f
+    assert all(off_mm(f, n, mini) < 3.0 for n in mini["wells"]), f["wells"]
+    # (witnesses that cannot say how the palette was turned: with violet's whole blob as the decoy the fit turns the
+    # other way, two of the five lose their blobs, and three wells in one corner are all that is left to confirm
+    # magenta: they can only say where the palette was pushed to, and magenta's blob must lie THERE to 8 mm)
+    decoy = palette_photo(mini, skip=("magenta",))
+    draw_blob(decoy, s["wells"]["violet"]["xy"], BLOB_BGR["violet"])
+    f = PS.relocate_wells(decoy, CAM, case, TZ)
+    assert f["found"] == 4 and list(f["apart_mm"]) == ["magenta"] and PS.LOCATE_AGREE_M * 1000.0 < f["apart_mm"]["magenta"] < 12.0, f
+    assert PS.locate_usable(f)[0] is False
+    # (a set-up of three wells has nobody to confirm a well with: the rule keeps out of it)
+    few = copy.deepcopy(s)
+    few["wells"] = {n: s["wells"][n] for n in ("red", "yellow", "green")}
+    f = PS.relocate_wells(palette_photo(few, (0.010, 0.0)), CAM, few, TZ)
+    assert f["apart_mm"] == {} and PS.locate_usable(f) == (True, None), f
+    # 4. the verifier's case, through the command, on the photo it happened on (the rig's set-up has no colours: the
+    #    first rule alone)
+    photos = [os.path.join(tazuna_paths.ROOT, "runs", "20261113_paint", n) for n in NEIGHBOUR_PHOTOS]
+    if not all(os.path.exists(p) for p in photos):
+        reset_state()
+        use_setup()
+        raise Skip(f"the photos of 2026-11-13 ({', '.join(NEIGHBOUR_PHOTOS)}) are not here; the parts on drawn palettes passed")
+    imgs = [cv2.imread(p) for p in photos]
+    truth = [PS.relocate_wells(img, CAM, s, TZ) for img in imgs]           # (where the set-up as it is finds them)
+    case = displaced(s, 8.0, (0.012, -0.012), "black")
+    use_setup(case)
+    before = open(SETUP_PATH, "rb").read()
+    r, made = cli("--sim", "locate", camera=lambda: imgs[0].copy())
+    check_result(r, ok=False, stage="locate")
+    assert r["saved"] is False and open(SETUP_PATH, "rb").read() == before and "set-up keeps the places it had" in r["reason"], r
+    assert "do not agree on ONE move" in r["reason"] and list(r["apart_mm"]) == ["magenta"] and r["apart_mm"]["magenta"] > 20.0, r["reason"]
+    assert "put the palette back" in r["next"] and "by hand" in r["next"] and "`fd paint locate` again" in r["next"], r["next"]
+    assert "元の位置に戻して" in r["say"] and "保存しませんでした" in r["say"] and os.path.exists(r["picture"]), r["say"]
+    assert r["brush"]["where"] == "photo pose"
+    # ... what the rule keeps out: with it switched off the same photo is stored, magenta on violet's paint
+    for img, tr in zip(imgs, truth):
+        with patched(PS, "LOCATE_CONFIRM_M", 1.0):
+            f = PS.relocate_wells(img, CAM, case, TZ)
+        assert PS.locate_usable(f) == (True, None) and f["wells"]["magenta"]["located"], f
+        assert off_mm(f, "magenta", tr) > 20.0 and off_mm(f, "magenta", {"wells": {"magenta": tr["wells"]["violet"]}}) < 20.0, f["wells"]["magenta"]
+        f = PS.relocate_wells(img, CAM, case, TZ)
+        assert PS.locate_usable(f)[0] is False and f["apart_mm"]["magenta"] > 20.0, f["apart_mm"]
+        # ... and with the colours of the wells on record, the colour alone keeps magenta off it (the first rule off)
+        known = copy.deepcopy(case)
+        for n in names:
+            if "hsv" in tr["wells"][n]:
+                known["wells"][n]["hsv"] = tr["wells"][n]["hsv"]
+        with patched(PS, "LOCATE_CONFIRM_M", 1.0):
+            f = PS.relocate_wells(img, CAM, known, TZ)
+        assert all(off_mm(f, n, tr) <= 8.0 for n in names if f["wells"][n]["located"]) or not PS.locate_usable(f)[0], f["wells"]
+        assert not f["wells"]["magenta"]["located"], f["wells"]["magenta"]
+    # ... while what works today still stores, and stores the same: the set-up turned up to 6 deg about that corner
+    #    well and pushed 12 mm each way (the wells within 8 mm of where the unturned set-up finds them)
+    stored = 0
+    for turn in (-6.0, -4.0, 4.0, 6.0):
+        for shift in ((0.0, 0.0), (0.012, -0.012), (-0.012, 0.012)):
+            f = PS.relocate_wells(imgs[0], CAM, displaced(s, turn, shift, "black"), TZ)
+            assert PS.locate_usable(f) == (True, None) and f["apart_mm"] == {} and f["other_colour"] == [], (turn, shift, PS.locate_usable(f))
+            stored += sum(1 for n in names if f["wells"][n]["located"])
+            assert all(off_mm(f, n, truth[0]) <= 8.0 for n in names if f["wells"][n]["located"]), (turn, shift, f["wells"])
+    assert stored >= 100, stored
     reset_state()
     use_setup()
 

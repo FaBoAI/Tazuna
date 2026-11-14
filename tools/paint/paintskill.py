@@ -23,12 +23,16 @@ tool_active.json; $FD_PAINT_SETUP names another; `load_setup` checks it, `save_s
         lasts load_mm of FINE line (a stroke uses its length times its width / the fine width). Absent: the
         flat brush of the morning of 2026-11-13 (its band measured about 9 mm), reloaded after 180 mm of plain
         travel. A plan says the same in its own "brush" block; a plan WITHOUT one is a plan for that flat brush.
-   "wells": {name: {"xy": [x, y], "z_mm": 2.5, "previous_xy": [x, y], "located": false, "expected_xy": [x, y]}},
+   "wells": {name: {"xy": [x, y], "z_mm": 2.5, "previous_xy": [x, y], "located": false, "expected_xy": [x, y],
+                    "hsv": [h, s, v]}},
         paint blobs; z_mm = brush tip above the table when scrubbing; previous_xy: where the well was before
         the last `fd paint locate` ("located" beside "wells" says when, and from which photo); "located": false:
         that command did not find the well in its photo, "xy" is where it was BEFORE the palette moved
         ("expected_xy": where the palette's move would put it; the next photo looks for it there), and no paint
-        is loaded from it (require_wells) until a later photo shows it or the place is written by hand
+        is loaded from it (require_wells) until a later photo shows it or the place is written by hand;
+        "hsv": the colour (OpenCV h, s, v) the well showed where `fd paint locate` last wrote it: that command
+        never writes the well onto paint of another colour again (take the key out when the well was refilled
+        with another paint)
    "water": {"rinse": {"xy", "z_mm"}, "clean": {"xy", "z_mm"}},
         ONE DISH: only "rinse" (then "clean" is the same dish, and it gets dirty fast)
    "blot": {"xy": [x, y], "size": [sx, sy], "z": height} | null,   scrap paper where a brush is pressed out
@@ -142,6 +146,21 @@ LOCATE_MIN_AGREE = 3
 LOCATE_AGREE_M = 0.008        # a blob this near to where the palette's move puts a well is that well's blob
 LOCATE_PAINT_R_M = 0.003      # "the photo shows paint there": a disc of this radius round the place ...
 LOCATE_PAINT_PART = 0.5       # ... is paint-coloured to at least this part
+# The palette moves as ONE piece, so every well that took a blob must lie where the OTHER wells' blobs put it. One
+# well that took a piece of its neighbour's paint (a piece the search area's border had cut, at the far end of a
+# palette that was turned 8 deg and pushed 17 mm) bent the fit by 6 deg, and with it three more wells were written
+# 12 to 20 mm beside the middle of their paint (verification of 2026-11-14). Left out of the fit, such a blob lies
+# 29 mm from where the others put its well; in the 2,193 results of that scan that are right (ten real photos,
+# turns up to 10 deg, pushes up to 17 mm) the largest such distance is 8.8 mm. A result with a blob further off
+# than this is not stored at all (locate_usable).
+LOCATE_CONFIRM_M = 0.012
+# A well also remembers the colour it showed where `fd paint locate` last wrote it ("hsv" in the set-up), and is
+# never written onto paint of another colour again (other_paint): hue alone, and only where both colours have one.
+# What that tells apart on the rig's palette: red / crimson / magenta / brown (one family), blue / cerulean, yellow,
+# green, violet, black. Not red from magenta: those two are left to the rule above.
+LOCATE_HUE_TOL = 12           # OpenCV hue units (24 deg); the same paint seen 2 cm apart differed by 3 at most
+LOCATE_CHROMA = (12.0, 20.0)  # s * v / 255: under the first a colour has no hue to speak of (black: 8), from the
+#                               second on it has one (the darkest paint with a hue, violet: 28)
 # Test strokes and ladders keep this far from the wells and dishes of the set-up unless they are asked to go
 # there (a well of the palette is 3 cm wide and has dividers 15 mm high, a dish a rim of 25 mm: one wrong sign
 # drags the pressed brush through them).
@@ -295,6 +314,12 @@ def _check_setup(s) -> None:
                              "it; take the key out once its \"xy\" is right)")
         if w.get("expected_xy") is not None:
             _pair(w["expected_xy"], f'well {name!r}: "expected_xy" (metres)', -1.0, 1.0)
+        if w.get("hsv") is not None:
+            if not (isinstance(w["hsv"], (list, tuple)) and len(w["hsv"]) == 3):
+                raise ValueError(f'well {name!r}: "hsv" must be three numbers (written by `fd paint locate`: the colour the '
+                                 "well showed; take the key out when the well holds another paint now)")
+            for k, v in enumerate(w["hsv"]):
+                _num(v, f'well {name!r}: "hsv"[{k}]', 0.0, 255.0)
     water = s["water"]
     if not isinstance(water, dict) or "rinse" not in water:
         raise ValueError('"water" must have "rinse": {"xy": [x, y]} (and "clean" when a second dish stands in reach)')
@@ -2854,6 +2879,27 @@ def overlay_plan(img, cam, setup: dict, plan: dict):
 
 
 # ============================================================================= where the paints are, from a photo
+def other_paint(a, b) -> bool:
+    """Do two colours (OpenCV [h, s, v]) show two DIFFERENT paints, as far as hue can tell? True when both have a
+    hue (s * v / 255 from LOCATE_CHROMA[1] on) and the two hues lie more than LOCATE_HUE_TOL apart (round the
+    circle of 180), or when one has a hue and the other has none (under LOCATE_CHROMA[0]: black). False for
+    everything else, also where nothing can be told: two dark colours, a hue between the two limits. So True is
+    a statement and False is not: red and magenta, blue and cerulean are "not different" here."""
+    ca, cb = float(a[1]) * float(a[2]) / 255.0, float(b[1]) * float(b[2]) / 255.0
+    lo, hi = LOCATE_CHROMA
+    if ca >= hi and cb >= hi:
+        d = abs(float(a[0]) - float(b[0])) % 180.0
+        return min(d, 180.0 - d) > LOCATE_HUE_TOL
+    return (ca >= hi and cb < lo) or (cb >= hi and ca < lo)
+
+
+def _fit_turns(src) -> bool:
+    """Can the well places `src` say how the palette was TURNED (and not only where it was pushed to)? At least
+    LOCATE_MIN_AGREE of them, the furthest 4 cm from their middle (_palette_fit fits a turn then)."""
+    src = np.asarray(src, dtype=float).reshape(-1, 2)
+    return len(src) >= LOCATE_MIN_AGREE and float(np.linalg.norm(src - src.mean(axis=0), axis=1).max()) >= 0.04
+
+
 def _palette_fit(src, dst) -> tuple:
     """The move of the palette as ONE rigid piece: the rotation and shift that take the well places `src` onto
     the blobs `dst` by least squares -> (function: place before -> place after, the turn in degrees). With fewer
@@ -2863,7 +2909,7 @@ def _palette_fit(src, dst) -> tuple:
     c_src, c_dst = src.mean(axis=0), dst.mean(axis=0)
     a, b = src - c_src, dst - c_dst
     turn = 0.0
-    if len(src) >= LOCATE_MIN_AGREE and float(np.linalg.norm(a, axis=1).max()) >= 0.04:
+    if _fit_turns(src):
         turn = math.atan2(float((a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]).sum()), float((a * b).sum()))
     cs, sn = math.cos(turn), math.sin(turn)
     rot = np.array([[cs, -sn], [sn, cs]])
@@ -2899,12 +2945,28 @@ def relocate_wells(img, cam, setup: dict, table_z: float, max_move_m: float = 0.
     stray piece of 12 mm, as its own blob; that ONE pair bent the fit, and in 33 results a well was written onto
     the white divider, in 52 more over 8 mm from its blob (third review). With the three rules: none of the 968.
     The test is the photo's colour and no more: the dark desk beside the palette is "paint" to it as well.
-    -> {"wells": {name: {"xy", "moved_mm", "located": bool, "by": "blob" | "paint" | None, "expected_xy"?}},
+    And after that (verification of 2026-11-14): with the set-up turned 8 deg about a corner well and pushed
+    17 mm, the search area (a box round where the SET-UP has the wells) cut the piece that violet and magenta
+    share, magenta took the middle of what was left, 15 mm from violet's place, and that pair turned the fit by
+    6 deg: magenta was stored on violet's paint, red, blue and brown 12 to 20 mm beside the middle of theirs
+    (4 of 2,640 turns and pushes of ten real photos; none up to 6 deg). Two rules since:
+    4. every well that took a blob must lie where the OTHER wells' blobs put it: its blob at most
+       LOCATE_CONFIRM_M from where the fit made WITHOUT it puts the well (LOCATE_AGREE_M where the others are
+       too few or too close together to fit a turn; "apart_mm" names the wells that do not). A result with
+       such a well is not stored at all (locate_usable): what its fit says of the other wells is worth
+       nothing. In that scan this refuses those four results and changes no other;
+    5. a well that has a colour on record ("hsv": what it showed where `fd paint locate` last wrote it) takes no
+       blob of another colour and is not written onto paint of another colour (other_paint: by hue, where both
+       colours have one); it then keeps its place and is not located ("other_colour" names it). This holds
+       whatever the fit says, also for a place the fit gave; a set-up without colours has rule 4 alone.
+    -> {"wells": {name: {"xy", "moved_mm", "located": bool, "by": "blob" | "paint" | None, "expected_xy"?,
+                         "hsv"?: the colour at the place as it is written, "other_colour"?: {"seen", "on_record"}}},
         "missing": [names without a blob of their own], "not_located": [names that keep their place: no paint
-        where the palette's move puts them, or at the place that would be written], "shift_mm": [dx, dy] (median
-        of the wells found by a blob), "turn_deg", "found": wells that took a blob of their own, "agree": wells
-        that had a blob within 8 mm of where the first shift put them, "blobs": the coloured pieces (also those
-        that are nobody's blob), "blob_xy": [[x, y], ...]}.
+        where the palette's move puts them, or at the place that would be written, or paint of another colour],
+        "shift_mm": [dx, dy] (median of the wells found by a blob), "turn_deg", "found": wells that took a blob
+        of their own, "agree": wells that had a blob within 8 mm of where the first shift put them, "blobs": the
+        coloured pieces (also those that are nobody's blob), "blob_xy": [[x, y], ...], "apart_mm": {name: mm}
+        (rule 4), "other_colour": [names] (rule 5)}.
     Nothing is written: the caller decides (locate_usable says whether this is a palette)."""
     import cv2
     wells = setup["wells"]
@@ -2917,7 +2979,7 @@ def relocate_wells(img, cam, setup: dict, table_z: float, max_move_m: float = 0.
     kept = np.array([wells[n]["xy"] for n in names], dtype=float).reshape(-1, 2)
     if not len(pts):
         return {"wells": {}, "missing": [], "not_located": [], "shift_mm": [0.0, 0.0], "turn_deg": 0.0, "blobs": 0, "found": 0,
-                "agree": 0, "blob_xy": []}
+                "agree": 0, "blob_xy": [], "apart_mm": {}, "other_colour": []}
     lo, hi = pts.min(axis=0) - 0.03, pts.max(axis=0) + 0.03
     corners = [[lo[0], lo[1], z], [lo[0], hi[1], z], [hi[0], hi[1], z], [hi[0], lo[1], z]]
     roi = np.zeros(img.shape[:2], np.uint8)
@@ -2950,6 +3012,20 @@ def relocate_wells(img, cam, setup: dict, table_z: float, max_move_m: float = 0.
         d = disc(p, LOCATE_AGREE_M)
         return set() if d is None else {int(k) for k in np.unique(lab[d[0]][d[1]]) if k}
 
+    def colour_at(p):
+        """The colour of the paint at table place p: the mean of the paint-coloured pixels of the disc paint_at
+        judges, as OpenCV [h, s, v]; None where there are none."""
+        d = disc(p, LOCATE_PAINT_R_M)
+        if d is None:
+            return None
+        px = img[d[0]][d[1] & (paint[d[0]] > 0)]
+        if not len(px):
+            return None
+        mean = np.clip(np.round(px.reshape(-1, 3).mean(axis=0)), 0, 255).astype(np.uint8).reshape(1, 1, 3)
+        return [int(v) for v in cv2.cvtColor(mean, cv2.COLOR_BGR2HSV)[0, 0]]
+
+    known = [wells[n].get("hsv") for n in names]            # the colour each well showed when it was last written
+
     blobs, b, piece = [], [], []
     for k in range(1, n):
         if stats[k, cv2.CC_STAT_AREA] < 60:
@@ -2960,6 +3036,10 @@ def relocate_wells(img, cam, setup: dict, table_z: float, max_move_m: float = 0.
             b.append(blobs[-1])
             piece.append(k)
     b = np.array(b, dtype=float).reshape(-1, 2)
+    # a well never takes a blob of another colour than the one it has on record
+    shown = [colour_at(p) for p in b]
+    alien = {(i, j) for i in range(len(pts)) for j in range(len(b))
+             if known[i] is not None and shown[j] is not None and other_paint(known[i], shown[j])}
     shift = np.zeros(2)
     best = (0, 0.0)
     if len(b):
@@ -2990,7 +3070,8 @@ def relocate_wells(img, cam, setup: dict, table_z: float, max_move_m: float = 0.
         for i, j in sorted(((i, j) for i in range(len(pts)) for j in range(len(b))), key=lambda ij: d[ij]):
             if d[i, j] > tol:
                 break
-            if i in pairs or j in used or float(np.hypot(*(b[j] - pts[i]))) > max_move_m or len(reach.get(piece[j], ())) > 1:
+            if (i in pairs or j in used or (i, j) in alien or float(np.hypot(*(b[j] - pts[i]))) > max_move_m
+                    or len(reach.get(piece[j], ())) > 1):
                 continue
             pairs[i] = j
             used.add(j)
@@ -3008,7 +3089,20 @@ def relocate_wells(img, cam, setup: dict, table_z: float, max_move_m: float = 0.
         if again == pairs and idx == sorted(pairs):
             break
         pairs, idx = again, sorted(again)
-    out, missing, lost, moves = {}, [], [], []
+    # every well that took a blob must lie where the OTHER wells' blobs put it (LOCATE_CONFIRM_M): one that does
+    # not has bent the fit, and what the fit then says of the wells without a blob is worth nothing. Where the
+    # others are too few or too close together to say how the palette was turned, they can only say where it was
+    # pushed to, and the well must lie where THAT puts it as closely as a blob is taken at all (LOCATE_AGREE_M): a
+    # far well whose only witnesses are three wells in one corner is confirmed by nobody
+    apart = {}
+    if len(pairs) > LOCATE_MIN_AGREE:
+        for i in sorted(pairs):
+            rest = [k for k in sorted(pairs) if k != i]
+            others, _turn = _palette_fit(pts[rest], b[[pairs[k] for k in rest]])
+            d = float(np.hypot(*(others(pts[i]) - b[pairs[i]])))
+            if d > (LOCATE_CONFIRM_M if _fit_turns(pts[rest]) else LOCATE_AGREE_M):
+                apart[names[i]] = round(d * 1000.0, 1)
+    out, missing, lost, moves, repainted = {}, [], [], [], []
     for i, name in enumerate(names):
         expected = None
         xy, by = (b[pairs[i]], "blob") if i in pairs else (move(pts[i]), "paint")
@@ -3016,7 +3110,12 @@ def relocate_wells(img, cam, setup: dict, table_z: float, max_move_m: float = 0.
         # The last gate, whatever the matching did: the place AS IT IS WRITTEN shows paint in the photo, or it
         # is not written (also a place taken from a blob: the middle of a piece is not always paint)
         xy = np.array([round(float(xy[0]), 4), round(float(xy[1]), 4)])
-        if not near or not paint_at(xy):
+        seen = colour_at(xy) if near else None
+        # ... and it shows the colour the well has on record, where it has one (also a place the fit gave)
+        wrong = bool(near and paint_at(xy) and known[i] is not None and seen is not None and other_paint(known[i], seen))
+        if wrong:
+            repainted.append(name)
+        if not near or not paint_at(xy) or wrong:
             fitted = move(pts[i])
             expected = fitted if float(np.hypot(*(fitted - pts[i]))) <= max_move_m else pts[i]
             xy, by = kept[i], None               # it keeps its place: nothing in the photo says where it is
@@ -3027,13 +3126,17 @@ def relocate_wells(img, cam, setup: dict, table_z: float, max_move_m: float = 0.
             missing.append(name)
         out[name] = {"xy": [float(v) for v in wells[name]["xy"]] if by is None else [float(xy[0]), float(xy[1])],
                      "moved_mm": round(float(np.hypot(*(xy - kept[i]))) * 1000.0, 1), "located": by is not None, "by": by}
+        if by is not None and seen is not None:
+            out[name]["hsv"] = seen              # (what the well shows where it is written: stored with the place)
+        if wrong:
+            out[name]["other_colour"] = {"seen": seen, "on_record": [int(round(float(v))) for v in known[i]]}
         if expected is not None:
             out[name]["expected_xy"] = [round(float(expected[0]), 4), round(float(expected[1]), 4)]
     med = np.median(np.array(moves), axis=0) if moves else np.zeros(2)
     return {"wells": out, "missing": missing, "not_located": lost,
             "shift_mm": [round(float(med[0]) * 1000.0, 1), round(float(med[1]) * 1000.0, 1)], "turn_deg": round(float(turn), 1),
             "blobs": len(blobs), "found": len(names) - len(missing), "agree": max(0, int(best[0])),
-            "blob_xy": [[round(x, 4), round(y, 4)] for x, y in blobs]}
+            "blob_xy": [[round(x, 4), round(y, 4)] for x, y in blobs], "apart_mm": apart, "other_colour": repainted}
 
 
 def locate_usable(found: dict) -> tuple:
@@ -3042,7 +3145,10 @@ def locate_usable(found: dict) -> tuple:
     shift agreed on by at least LOCATE_MIN_AGREE wells (all of them where the set-up has fewer). `fd paint
     locate` used to store whatever one photo gave: a photo without a palette "0 found, the 10 not found were
     shifted the same, stored"; ONE saturated blob 25 mm beside the red well moved all ten wells by 25 mm,
-    onto the bare palette and its rim (review of 2026-11-13)."""
+    onto the bare palette and its rim (review of 2026-11-13). And only when the wells that took a blob agree on
+    ONE move of the palette ("apart_mm" of the result is empty: relocate_wells, rule 4): one well on its
+    neighbour's paint turned the fit by 6 deg, and three more wells were stored 12 to 20 mm beside the middle
+    of their paint (verification of 2026-11-14)."""
     n = len(found.get("wells") or {})
     if not n:
         return False, "the set-up has no wells"
@@ -3054,6 +3160,13 @@ def locate_usable(found: dict) -> tuple:
                        f"coloured piece(s) in the palette's area); {need} are needed to call it the palette")
     if ok < agree:
         return False, (f"only {ok} well(s) agree on where the palette moved to; {agree} are needed (one stray blob is no palette)")
+    apart = found.get("apart_mm") or {}
+    if apart:
+        return False, ("the wells do not agree on ONE move of the palette: "
+                       + ", ".join(f"the blob {name} took lies {d:g} mm from where the other wells' blobs put {name}"
+                                   for name, d in apart.items())
+                       + f" (more than {LOCATE_CONFIRM_M * 1000:.0f} mm: a well has taken paint that is not its own, and "
+                         "what the fit says of the other wells cannot be relied on)")
     return True, None
 
 

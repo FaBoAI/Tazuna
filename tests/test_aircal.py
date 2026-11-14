@@ -51,6 +51,12 @@ What they show:
   the photos alone and with that rule); the hint of a folded arm names the storing first while no tip is on
   record as measured; no command is printed that is refused as typed (the two modules' own texts are read for
   that, and a `calib-air` command is put through the command's own option checks); an abbreviated option is refused;
+- what the last verification (2026-11-14) left open: the base turns only with the tool lifted. The first look raises
+  the gripper 10 cm straight up without turning it, turns its base there and comes straight down, so that whatever
+  is taped on passes over the table 10 cm above where it hung (the REAL tip of tools longer than registered stays
+  8 cm and more above the table while the base turns and over the rig's water dish, where it passed at 12 .. 47 mm);
+  a lift that ends short does not let the base turn, and where no such way exists the look is refused before
+  anything moves;
 - the five captures of 2026-11-13 give the numbers of that day, and the morning's photos against the camera
   model from before the camera was moved give the warning (local photos: skipped when missing).
 
@@ -1047,9 +1053,12 @@ def test_dry_plans_and_writes_no_goal():
         # look from there. It is taken at the look pose turned aside about the base, over a clean background)
         assert "at the look pose turned" in r["look"]["photo_before"] and "aside" in r["look"]["photo_before"], r["look"]
         # (round 3b, U2) ... and the plan says what that turn passes over, before the look has judged anything
+        # (and since the evening of 2026-11-14: the base turns only with the tool lifted; what has to be clear is the
+        # place where the arm comes down for that photo)
         over = r["look"]["turn_over"]
-        assert "pan" in over and "a tool longer than registered passes lower" in over, over
-        assert "clear of anything higher than about 2 cm" in over and "water dish" in over, over
+        assert "pan" in over and "lifted 10 cm straight up" in over and "at least 10 cm above the table" in over, over
+        assert "clear of anything higher than about 2 cm" in over and "one longer than registered hangs lower" in over, over
+        assert "lifted 10 cm straight up" in r["look"]["via"] and "straight down" in r["look"]["via"], r["look"]["via"]
         assert "blank sheet" in r["look"]["background"] and "120 px" in r["look"]["background"], r["look"]["background"]
         assert "holds where the last photo was taken" in r["end"]["note"] and "was never measured" in r["end"]["note"], r["end"]
         assert "`fd calib-air`" in r["next"] and "アームは動かしていません" in r["say"] and r["sim"] is True
@@ -1850,7 +1859,7 @@ def test_a_look_never_passes_by_colour_alone():
         assert "fold only when the photo shows the tool no longer than registered" in res["next"]
         assert folds_where_it_points(res["next"], res["arm"]) and "`fd tool rest`" not in res["next"]
         # (round 3b, U2) the pose is not called harmless any more; the side the arm turned over is named
-        assert "harmless" not in res["next"] and "where a longer tool passes lower" in res["next"], res["next"]
+        assert "harmless" not in res["next"] and "the base turns only with the tool lifted 10 cm straight up" in res["next"], res["next"]
         assert "clear of anything higher than about 2 cm" in res["next"] and res["look"]["before"]["over"] in res["next"], res["next"]
         # --dry from there plans the same turn, and writes no goal
         writes = bus.io["writes"]
@@ -3027,6 +3036,193 @@ def test_real_desk_the_looks_that_passed_from_near_the_look_pose_are_refused():
     # (all 9 + 24 starts in which a look once passed could be started)
     assert side == 24 and tried >= 49 and turned + unmoved == tried and turned >= 40 and dirty >= 10, (tried, side, turned, unmoved, dirty)
     assert side_low > 0.0, side_low
+
+
+# ----------------------------------------------------------------------------- the base turns only with the tool lifted
+RIG_DISH = (0.346, 0.192)                # the water dish of the rig's painting set-up (2026-11-13), 7.5 cm round it
+RIG_FOLD = (0.04, -100.0)                # how the rig's arm lies folded: the registered tip 4 cm up, the base at -100 deg
+PHOTO_POSE_DEG = (-89.2, -61.7, 36.2, 85.6, 0.0)       # where the painting commands leave the arm: the gripper 60 deg down
+
+
+def _tool_points(reach: float = TL.MAX_OFFSET_M, step: float = 0.05) -> np.ndarray:
+    """Points of whatever may be taped to the gripper (its axes): in 26 directions, every `step` out to `reach`."""
+    dirs = [np.array(d, dtype=float) for d in itertools.product((-1, 0, 1), repeat=3) if any(d)]
+    return np.array([d / np.linalg.norm(d) * r for d in dirs for r in np.arange(step, reach + 1e-9, step)])
+
+
+def _point_heights(q, pts) -> np.ndarray:
+    """Height above the table of gripper-frame points at joint pose q."""
+    t = K.fk(np.asarray(q, dtype=float))
+    return (t[:3, 3] + pts @ t[:3, :3].T)[:, 2] - TZ
+
+
+def _samples(wps, step_deg: float = 1.0) -> list:
+    out = [np.asarray(wps[0], dtype=float)]
+    for a, b in zip(wps[:-1], wps[1:]):
+        n = max(1, int(math.ceil(math.degrees(float(np.max(np.abs(np.asarray(b) - np.asarray(a))))) / step_deg)))
+        out += [np.asarray(a) + (np.asarray(b) - np.asarray(a)) * (k / n) for k in range(1, n + 1)]
+    return out
+
+
+def test_the_base_turns_only_with_the_tool_lifted():
+    """U2 of the last verification (2026-11-14). For the photo "before", the first look turned the look pose to the
+    palette's side and back with the fingertip 12 cm above the table: before the look had judged anything, a tool
+    longer than registered passed 12 .. 47 mm above the table within 7.5 cm of the rig's water dish (26 mm for a brush
+    9 cm longer than registered, 24 mm for the mistake of 2026-11-13, 12 mm for 20 cm). Now the base turns only after
+    the gripper was lifted 10 cm straight up without turning (aircal.straight_lift, look_way, fly_look_way): whatever
+    is taped on, of any length and in any direction, is then 10 cm above where it hung, and the arm comes straight down
+    onto the pose. Where the arm cannot do that, the look is refused before anything moves."""
+    tool = thin_tool(SHORT_GUESS)
+    arm, _bus = sim_arm(tool)
+    q_look = AC.look_pose(arm, tool, CAM)["q"]
+    aside = q_look.copy()
+    aside[0] -= math.radians(97.0)
+    pts = _tool_points()
+    far = pts[np.linalg.norm(pts, axis=1) > TL.MAX_OFFSET_M - 1e-6]
+    # 1. the lift: nothing turns, and every point of anything within 30 cm of the gripper goes up by the same 10 cm
+    up = AC.straight_lift(arm, tool, q_look)
+    t0 = K.fk(q_look)
+    for w in up:
+        t = K.fk(w)
+        assert abs(w[0] - q_look[0]) < math.radians(0.05) and abs(w[4] - q_look[4]) < 1e-6, np.degrees(w)
+        assert np.max(np.abs(t[:3, :3] - t0[:3, :3])) < 2e-3 and np.linalg.norm(t[:2, 3] - t0[:2, 3]) < 1e-3, np.degrees(w)
+    gain = _point_heights(up[-1], pts) - _point_heights(q_look, pts)
+    assert np.all(np.abs(gain - AC.LOOK_LIFT_M) < 0.004), (gain.min(), gain.max())
+    assert abs(AC.tool_rise(q_look, up[-1]) - AC.LOOK_LIFT_M) < 0.003 and abs(AC.tool_rise(q_look, aside)) < 1e-5
+    # (tool_rise is what the point that gains LEAST gains: a gripper that tips on the way gives part of the lift away)
+    tipped = up[-1].copy()
+    tipped[3] += math.radians(10.0)
+    least = float((_point_heights(tipped, far) - _point_heights(q_look, far)).min())
+    assert AC.tool_rise(q_look, tipped) <= least + 1e-6 and AC.tool_rise(q_look, tipped) < AC.LOOK_LIFT_M - 0.04, least
+    # a gripper that points steeply down has its wrist at the limit: it cannot be lifted straight up, and says so
+    photo_pose = np.radians(PHOTO_POSE_DEG)
+    assert "cannot lift" in str(raises(SafetyError, AC.straight_lift, arm, tool, photo_pose))
+    # 2. the way, as it is planned: lift, turn, (across,) straight down, and no other leg turns the base. While the
+    #    base turns, every point of a tool that could be on the arm where it stood (not inside the table) is 10 cm
+    #    above the table, whatever its length and direction
+    fold, rig_fold = TL.rest_q(arm, tool), TL.rest_q(arm, tool, *RIG_FOLD)
+    for name, q_from, q_to, kinds in (("look pose -> aside", q_look, aside, ["lift", "turn", "lower"]),
+                                      ("aside -> look pose", aside, q_look, ["lift", "turn", "lower"]),
+                                      ("fold -> aside", fold, aside, ["lift", "turn", "plane", "lower"]),
+                                      ("the rig's fold -> aside", rig_fold, aside, ["lift", "turn", "plane", "lower"]),
+                                      ("photo pose -> aside", photo_pose, aside, ["plane", "lift", "turn", "lower"])):
+        way = AC.look_way(arm, tool, q_from, q_to)
+        assert [leg["kind"] for leg in way["legs"]] == kinds and way["turn"] and way["lift_m"] == AC.LOOK_LIFT_M, (name, way["via"])
+        assert way["turn_rise_m"] >= AC.LOOK_LIFT_M - 0.005 and np.allclose(way["legs"][-1]["path"][-1], q_to), (name, way)
+        assert AC.unknown_tool_dip(arm, tool, AC.plan_waypoints(way)) is None, name
+        ground = None
+        for leg in way["legs"]:
+            path = leg["path"]
+            if leg["kind"] == "lift":
+                ground = path[0]
+            if leg["kind"] != "turn":
+                assert max(abs(w[0] - path[0][0]) for w in path) < math.radians(0.05), (name, leg["kind"])
+                continue
+            could_be = pts[_point_heights(ground, pts) >= 0.0]
+            for q in _samples(path):
+                assert AC.tool_rise(ground, q) >= AC.LOOK_LIFT_M - 0.005, (name, AC.tool_rise(ground, q))
+                assert _point_heights(q, could_be).min() >= AC.LOOK_LIFT_M - 0.005, (name, _point_heights(q, could_be).min())
+        down = way["legs"][-1]["path"]                      # ... and it comes down along a vertical line, not turning
+        t1 = K.fk(q_to)
+        assert all(np.max(np.abs(K.fk(w)[:3, :3] - t1[:3, :3])) < 2e-3 and np.linalg.norm(K.fk(w)[:2, 3] - t1[:2, 3]) < 1e-3 for w in down), name
+    # two poses on one base angle need no turn and no lift
+    same = AC.look_way(arm, tool, np.radians([0.0, -60.0, 40.0, 60.0, 0.0]), q_look)
+    assert not same["turn"] and same["lift_m"] is None and {leg["kind"] for leg in same["legs"]} <= {"plane", "raise"}, same["via"]
+    # 3. the verifier's scenario, through the look itself on the simulated arm, the REAL tip traced: tools longer than
+    #    registered, from the look pose (where a refused look leaves the arm) and from folds
+    cases = (("the rig's brush, 9 cm longer", THIN_TIP, [0.016, -0.0011, 0.146], "look"),
+             ("8 cm registered, 17.7 cm along", SHORT_GUESS, LONGER_TIP, "look"),
+             ("8 cm registered, 20 cm along", SHORT_GUESS, [-0.001, 0.0, 0.200], "look"),
+             ("8 cm registered, (0, -60, 177)", SHORT_GUESS, [0.0, -0.060, 0.1768], "look"),
+             ("8 cm registered, 17.7 cm along, folded", SHORT_GUESS, LONGER_TIP, "fold"),
+             ("the rig's brush, 5 cm longer, the rig's fold", THIN_TIP, [0.016, -0.0011, 0.106], "rig"))
+    lows = []
+    for name, reg, real, start in cases:
+        registered = thin_tool(reg)
+        with tool_file(registered):
+            arm, bus = sim_arm(TL.active())
+            if start == "look":
+                held_at_look_pose(real)(arm, bus)
+            elif start == "fold":
+                at_rest_of(real)(arm, bus)
+            else:
+                assert TL.sim_place(arm, TL.rest_q(arm, registered, *RIG_FOLD))
+            bus.trace.clear()
+            first = []
+            real_fly = AC.fly_look_way
+
+            def fly(*a, _real=real_fly, **k):
+                first.append(len(bus.trace))                # (how many samples the arm had made when a way began)
+                return _real(*a, **k)
+
+            AC.fly_look_way = fly
+            shots = camera_for(arm, real, hand_every=0)
+            try:
+                lk = CLI._look(arm, arm.tool, CAM, shots, tempfile.mkdtemp(prefix="look_", dir=_TMP), "tip", lambda *m: None)
+            finally:
+                AC.fly_look_way = real_fly
+            # the look itself is what it was: a photo with the look pose turned aside, one at the look pose, refused
+            assert lk["ok"] is False and lk["checked"] is True and len(shots.shots) == 2, (name, lk)
+            assert lk["before"]["turn_deg"] in AC.LOOK_ASIDE_DEG and "turned aside" in lk["before"]["taken"], (name, lk["before"])
+            assert np.max(np.abs(shots.shots[0][1:] - q_look[1:])) < math.radians(1.5), (name, np.degrees(shots.shots[0]))
+            assert np.allclose(q_of(bus.pos), AC.look_pose(arm, arm.tool, CAM)["q"], atol=math.radians(1.0)), name
+            assert "lifted 10 cm straight up" in lk["before"]["way"] and "lifted 10 cm straight up" in lk["way"]["via"], (name, lk)
+            assert lk["before"]["rise_at_turn_mm"] >= 90.0 and lk["way"]["rise_at_turn_mm"] >= 90.0, (name, lk["before"], lk["way"])
+            qs = [q_of(p) for p in bus.trace]
+            tip = np.array([K.fk(q, K.tool_offset(*real))[:3, 3] for q in qs])
+            h = tip[:, 2] - TZ
+            pan = np.degrees([q[0] for q in qs])
+            turning = np.zeros(len(qs), bool)
+            turning[1:] = np.abs(np.diff(pan)) > 0.02
+            over_dish = np.linalg.norm(tip[:, :2] - RIG_DISH, axis=1) < 0.075
+            assert turning.sum() > 200 and over_dish.sum() > 20 and np.all(turning[over_dish]), (name, turning.sum(), over_dish.sum())
+            # while the base turns, and over the dish, the REAL tip is 8 cm and more above the table (it was 12 .. 47 mm)
+            assert h[turning].min() >= AC.LOOK_CLEAR_M and h[over_dish].min() >= AC.LOOK_CLEAR_M, (name, h[turning].min(), h[over_dish].min())
+            # ... and so is every point of a tool of up to 30 cm that could have been on the arm where it started
+            could_be = pts[_point_heights(qs[first[0]], pts) >= 0.0]
+            worst = min(float(_point_heights(q, could_be).min()) for q in np.array(qs)[turning][::10])
+            assert worst >= AC.LOOK_CLEAR_M, (name, worst)
+            # the look's own ways never bring the real tip lower than it was when they began (to 3 mm)
+            assert h[first[0]:].min() >= h[first[0]] - 0.003, (name, h[first[0]], h[first[0]:].min())
+            lows.append((name, round(float(h[turning].min()) * 1000), round(float(h[over_dish].min()) * 1000), round(worst * 1000)))
+    print("     note: the REAL tip while the base turns / over the rig's dish / the lowest point of any tool of up to 30 cm "
+          "while it turns, in mm above the table: " + "; ".join(f"{n}: {a} / {b} / {c}" for n, a, b, c in lows))
+    # 4. what is asked of the MEASURED arm: a lift that ends short does not let the base turn. The arm holds where it is
+    with tool_file(thin_tool(SHORT_GUESS)):
+        arm, bus = sim_arm(TL.active())
+        held_at_look_pose()(arm, bus)
+        q0 = arm.read_q()
+        way = AC.look_way(arm, arm.tool, q0, aside)
+        real_lift = AC.straight_lift
+        AC.straight_lift = lambda a, t, q, rise_m=AC.LOOK_LIFT_M: real_lift(a, t, q, 0.03)
+        try:
+            e = raises(MotionAborted, AC.fly_look_way, arm, aside, way=way)
+        finally:
+            AC.straight_lift = real_lift
+        assert "the base was not turned" in str(e) and "holds" in str(e), str(e)
+        q1 = q_of(bus.pos)
+        assert abs(math.degrees(q1[0] - q0[0])) < 0.5 and 0.02 < AC.tool_rise(q0, q1) < 0.04 and all(bus.torque[j] == 1 for j in ARM)
+        # ... and a way that is flown says what it measured
+        flown = AC.fly_look_way(arm, aside)
+        assert flown["turned"] and flown["rise_at_turn_m"] >= AC.LOOK_LIFT_M - 0.01 and flown["legs"] >= 3, flown
+        assert np.allclose(q_of(bus.pos), aside, atol=math.radians(1.0)) and flown["min_tip_height_m"] >= TL.MIN_FREE_HEIGHT
+    # 5. no such way: refused before anything moves. (a) A tool whose own joint limits keep the wrist from following the
+    #    lift at the look pose: no turn can be flown back from, whatever the start, and no fold is named
+    stiff = thin_tool(SHORT_GUESS, joint_limits_deg={"wrist_flex": [20.0, 45.0], "wrist_roll": [-5.0, 5.0]})
+    with tool_file(stiff):
+        res, arm, bus, shots, root = run_command([], stiff, SHORT_GUESS)
+        assert res["ok"] is False and res["stage"] == "look" and "cannot be turned aside" in res["reason"], res
+        assert "lifted" in res["reason"] and "no way back to the look pose" in res["reason"], res["reason"]
+        assert not shots.shots and not bus.log and not any(bus.torque[j] for j in ARM), "the arm was powered or moved"
+        assert "folding the arm first does not help" in res["next"] and "`fd tool rest" not in res["next"], res["next"]
+        assert "アームは動かしていません" in res["say"] or "動かす前" in res["say"], res["say"]
+    #    (b) an arm that stands where it can neither lift nor reach the look pose on its base angle without dipping
+    #    for a tool of unknown length (the first pose of the high set): there the START is what is in the way
+    thin = thin_tool()
+    arm, _bus = sim_arm(thin)
+    held = poses("tip")[0]
+    e = raises(SafetyError, AC.look_aside, arm, thin, CAM, held, AC.look_pose(arm, thin, CAM)["q"])
+    assert "no safe way from where it stands" in str(e) and "cannot be turned aside" not in str(e), str(e)
 
 
 # ----------------------------------------------------------------------------- the day's photos

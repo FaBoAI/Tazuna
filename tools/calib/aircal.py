@@ -42,7 +42,7 @@ The look needs a second photo, of the scene WITHOUT the tool there: by colour al
 to 41 "tips" (the strokes of the picture, paint on scrap strips), and a registered tip that was 5 and 9 cm off
 passed with the nearest of them 21 and 35 px away (review of 2026-11-13). A look without that photo is "not
 checked", never "passed"; an arm that already stands at the look pose is first turned aside about its base
-(`look_aside`: no point of a tool of unknown length changes its height when only the base turns). So is an arm
+(`look_aside`). So is an arm
 that stands anywhere the camera model sees it at the place of the look (`look_hidden`, `silhouette`): what the
 arm hides in the photo "before" is revealed in the look photo, and paint among it passed for the tip of a tool
 9 cm longer than registered (review of 2026-11-14); and nothing the look photo shows where the arm stood for
@@ -54,6 +54,13 @@ that leaves one place for the photo before: the look pose turned 90 deg and more
 goes there from wherever the arm stands), and for some registrations none: the look is then refused before
 anything moves. And no look is taken where the photo before shows bristle-coloured paint near the place of the
 look (`look_background`): the look cannot tell a brush from paint behind it.
+The turn itself (2026-11-14, evening): the base turns only with the tool LIFTED. Turned at the look pose's own
+height, a tool longer than registered passed 12 .. 47 mm above the table over the rig's water dish and palette
+(simulated), before the look had judged it. So the arm first raises the gripper 10 cm straight up without turning
+it (`straight_lift`: every point of whatever is taped on goes up by the same 10 cm), turns its base there (no
+point changes its height), and comes straight down onto the pose (`look_way`, flown by `fly_look_way`, which asks
+the measured arm for the lift before and while the base turns). Where the arm cannot do that, the look is refused
+before anything moves.
 
 Stages (each its own function; nothing here writes the rig's files, `fd calib-air` (aircal_cli.py) does that):
   plan(arm, tool) / plan_points(...)      joint poses: the tool tip on a grid / at given places, all checks passed
@@ -68,6 +75,9 @@ Stages (each its own function; nothing here writes the rig's files, `fd calib-ai
   measure_full(...) / measure_tip(...)    photos -> detection -> solve, with the reason for every unused photo
   look_pose(arm, tool, cam) / look_aside(...) / look_check(img, cam, q, tip, bg, q_bg=...)
                                           the first look at a tool whose length is a guess
+  straight_lift(arm, tool, q) / tool_rise(q_a, q_b) / look_way(arm, tool, q_from, q_to) / fly_look_way(arm, q_to)
+                                          the ways of that look: lift straight up, turn the base, straight down; how
+                                          much the point of a tool that gained least has gained between two poses
   silhouette(cam, q, tip) / look_hidden(cam, q, q_look, tip)
                                           where the camera model sees the arm and whatever a tool could reach, and
                                           whether a photo taken with the arm there shows the place of the look without
@@ -160,6 +170,20 @@ LOOK_ASIDE_DEG = (60.0, -60.0, 75.0, -75.0, 45.0, -45.0, 90.0, -90.0, 97.0, -97.
 #                 (SIL_REACH_M): with this rig's camera only the last turns do that, -90 / -97 for the tools of that
 #                 day; 97 is 3 deg inside the base's soft limit)
 LOOK_ASIDE_PX = 500.0
+# The base turns only with the tool LIFTED (2026-11-14, evening). Until then the look pose was turned to the side
+# of the photo "before" and back with the fingertip 12 cm up: a tool longer than registered passed 12 .. 47 mm above
+# the table over the water dish and the palette of the rig (simulated: 26 mm for a brush 9 cm longer, 24 mm for the
+# mistake of 2026-11-13, 12 mm for 20 cm), before the look had judged anything. Now the arm first raises the gripper
+# straight up without turning it (straight_lift), turns its base at that height, and comes straight down again
+# (look_way). A lift that does not turn the gripper raises EVERY point of whatever is taped to it by the same
+# amount, and a turn of the base alone changes no height: so during the turn every point of the tool is LOOK_LIFT_M
+# above where it hung before the lift, hence at least that far above the table, whatever the tool's length and
+# direction (it could not hang inside the table). Nothing of that depends on the registration.
+LOOK_LIFT_M = 0.10                   # 4 cm clear of things 6 cm high (the dish's rim was 2.5 cm, the palette's dividers
+#                                      1.5 cm) for a tool that hung ON the table; the look pose lifts 14 cm at most
+LOOK_CLEAR_M = 0.08                  # what the MEASURED arm must still show of that lift while its base turns (2 cm
+#                                      for sag and tracking: the measured tip ran up to 1 cm below the plan at 20 deg/s)
+LOOK_TURN_FREE_DEG = 1.0             # a change of the base angle up to this is no turn (it moves a 30 cm tool 5 mm)
 """What the look pose is safe for. With the fingertip h >= 0.12 m above the table and the fingers at most 30 deg
 below the horizontal (wrist roll 0: the fixed jaw is the lower one), a tool whose tip lies L from the fingertip
 is above the table by at least  0.12 - L * sin(30 deg + a),  a = how far the tool leans from the finger line
@@ -170,7 +194,8 @@ TOWARDS THE FIXED JAW (down). So, with 2 cm to spare:
   - ANY direction, straight down included: up to 10 cm.
 The tools taped on so far were 6 to 17 cm (the 17 cm one pointed up and out). `tooling.MAX_OFFSET_M` (30 cm) is
 NOT covered: a tool longer than the bound has to be looked at by a person before the arm moves.
-The way to the look pose is checked for the same unknown tools (unknown_tool_dip)."""
+The way to the look pose is checked for the same unknown tools (unknown_tool_dip); where it turns the base, the
+tool is lifted first (look_way), and THAT holds for a tool of any length."""
 
 # What the ARM hides in the photo "before" is revealed in the look photo, and where that is paint it differs
 # from the photo before and is bristle-coloured: a candidate. Simulated on the evening's desk (review of
@@ -1070,8 +1095,301 @@ def look_pose(arm, tool, cam=None, poses=LOOK_POSES, size=IMAGE_SIZE) -> dict:
 
 
 def plan_waypoints(plan: dict) -> list:
-    """The joint poses of a tooling.plan_free_move result, in the order they are flown (its lift, then its path)."""
+    """The joint poses of a way, in the order they are flown: of a look_way result (its legs, one after the
+    other) or of a tooling.plan_free_move result (its lift, then its path)."""
+    if "legs" in plan:
+        out = []
+        for leg in plan["legs"]:
+            out += list(leg["path"]) if not out else list(leg["path"][1:])
+        return out
     return (list(plan["lift"]) + list(plan["path"][1:])) if plan.get("lift") else list(plan["path"])
+
+
+# ----------------------------------------------------------------------------- the way of the look: lift, turn, lower
+def tool_rise(q_a, q_b, reach: float = SIL_REACH_M) -> float:
+    """How much higher (m) is, at joint pose q_b, the point of a tool that gained LEAST since q_a? Taken over
+    every point within `reach` of the gripper frame, in any direction (tooling.MAX_OFFSET_M: whatever may be
+    taped on). A point p (gripper axes) stands at  z_gripper + up . p,  `up` being the base frame's vertical
+    seen from the gripper (the third row of its rotation); so the least gain of all of them is
+        (z_b - z_a) - reach * |up_b - up_a|.
+    A turn of the base alone changes neither term: it is 0 for it. A lift that keeps the gripper's direction
+    gives its own height; every degree the gripper tips on the way costs 5 mm of it. Negative: some point of a
+    tool that long may have come down by that much."""
+    ta, tb = K.fk(np.asarray(q_a, dtype=float)), K.fk(np.asarray(q_b, dtype=float))
+    return float(tb[2, 3] - ta[2, 3]) - float(reach) * float(np.linalg.norm(tb[2, :3] - ta[2, :3]))
+
+
+def straight_lift(arm, tool, q, rise_m: float = LOOK_LIFT_M) -> list:
+    """Joint waypoints (starting with q) that raise the gripper rise_m STRAIGHT UP without turning it: pan, roll
+    and the gripper's pitch stay as they are, so every point of whatever is taped to the gripper goes up by the
+    same rise_m, along a vertical line. That is what makes the lift safe for a tool nobody has measured: nothing
+    of it moves sideways, nothing swings, and afterwards all of it is rise_m above where it hung.
+
+    Planned as a straight line of the registered tip (Arm.plan_tip_path, a waypoint every 3 mm) and then
+    VERIFIED on the solved poses, not assumed: each passes tooling.check_pose with the registered tool (its
+    joint limits, the keep-outs), no point of a tool of up to SIL_REACH_M comes lower on the way than it was a
+    waypoint before (tool_rise), and at the end all of them have gained rise_m (to 3 mm). A start pose that
+    lies outside a joint limit of the tool is held there, as tooling.lift_path does. No motion.
+    Raises SafetyError when the arm cannot do that from q (the text says what stopped it: mostly the wrist's
+    limit, for a gripper that points steeply down)."""
+    q = np.asarray(q, dtype=float)
+    rise = float(rise_m)
+    tl = K.tool_offset(*tool.tip_offset)
+    try:
+        planner = TL._holding_start(tool, q)
+        # an arm that was folded onto a soft limit reads a few hundredths of a degree beyond it (pan -100.02 under a
+        # limit of -100): the line is planned from the pose just inside, which the path's start is re-anchored to
+        q_in = q.copy()
+        for i, (lo, hi) in enumerate(TL._limits(arm, planner)[j] for j in K.ARM_JOINTS):
+            if not lo <= q_in[i] <= hi and min(abs(q_in[i] - lo), abs(q_in[i] - hi)) <= math.radians(0.5):
+                q_in[i] = min(max(q_in[i], lo + 1e-5), hi - 1e-5)
+        p = K.fk(q_in, tl)[:3, 3].copy()
+        pitch = K.pose_summary(q_in, tl)["pitch_down_deg"]
+        with TL._as_tool(arm, planner):
+            wps = arm.plan_tip_path([(np.array([p[0], p[1], p[2] + rise]), pitch, math.degrees(float(q_in[4])))],
+                                    q_start=q_in, step_m=0.003)
+        wps = [q] + list(wps[1:])
+        gained = 0.0
+        for k, w in enumerate(wps[1:], 1):
+            TL.check_pose(arm, tool, w, q_start=q, what=f"lift point {k}")
+            g = tool_rise(q, w)
+            if g < gained - 5e-4:
+                raise SafetyError("something on the gripper would come down on the way up")
+            gained = max(gained, g)
+        if gained < rise - 0.003:
+            raise SafetyError(f"the lift would end {gained * 1000:.0f} mm up")
+    except SafetyError as e:
+        raise SafetyError(f"the arm cannot lift what is on its gripper {rise * 100:.0f} cm straight up from that pose "
+                          f"({str(e)[:160]})") from e
+    return [np.asarray(w, dtype=float) for w in wps]
+
+
+def plane_move(arm, tool, q_from, q_to) -> dict:
+    """A free move that does NOT turn the base: tooling.plan_free_move for two poses on one base angle, with
+    the ways that keep it (direct, the wrist first, the wrist last; never through the stand-by pose, which lies
+    on another base angle). A tool tip lower than tooling.LIFT_HEIGHT is lifted first, as there. -> the same
+    dict ({"lift", "path", "via", "min_height_m", "lift_via"}). SafetyError when no such way passes. No motion."""
+    q0, q1 = np.asarray(q_from, dtype=float), np.asarray(q_to, dtype=float)
+    if abs(float(q1[0] - q0[0])) > math.radians(LOOK_TURN_FREE_DEG) + 1e-9:
+        raise SafetyError("plane_move is for two poses on one base angle")
+    limit = TL.MIN_FREE_HEIGHT + TL.PLAN_MARGIN
+    h_to = TL.tip_height(arm, q1, tool)
+    if h_to < limit:
+        raise SafetyError(f"the pose to go to has the tool tip {h_to * 1000:.0f} mm above the table; a free move keeps "
+                          f"it above {limit * 1000:.0f} mm")
+    lift, lift_via, q = None, None, q0
+    if TL.tip_height(arm, q0, tool) < TL.LIFT_HEIGHT - 0.002:
+        lift, lift_via = TL._lift_plan(arm, tool, q0)
+        q = np.asarray(lift[-1], dtype=float)
+    first, late = q.copy(), q1.copy()
+    first[3:], late[3:] = q1[3:], q[3:]
+    roomy = min(TL.tip_height(arm, q, tool), limit + 0.01) - 0.003
+    tried, best = [], None
+    for name, mids in (("direct", []), ("wrist first", [first]), ("wrist last", [late])):
+        pts = [q] + mids + [q1]
+        try:
+            lo = min(TL._segment(arm, tool, pts[i], pts[i + 1], limit, name) for i in range(len(pts) - 1))
+        except SafetyError as e:
+            tried.append(f"{name}: {e}")
+            continue
+        if best is None or lo > best["min_height_m"] + 0.002:
+            best = {"lift": lift, "path": pts, "via": name, "min_height_m": round(float(lo), 4), "lift_via": lift_via}
+        if lo >= roomy:
+            break
+    if best is None:
+        raise SafetyError(f"no way to that pose that leaves the base where it is keeps the tip of tool '{tool.name}' "
+                          f"{limit * 1000:.0f} mm above the table and passes the safety checks. Tried: {' | '.join(tried[:3])}")
+    return best
+
+
+def _plane_legs(plan: dict) -> list:
+    """The legs of a plane_move result: its lift (kind "raise"), then every piece of its path (kind "plane")."""
+    legs = [{"kind": "raise", "path": [np.asarray(w, dtype=float) for w in plan["lift"]]}] if plan.get("lift") else []
+    pts = plan["path"]
+    return legs + [{"kind": "plane", "path": [np.asarray(pts[i], dtype=float), np.asarray(pts[i + 1], dtype=float)]}
+                   for i in range(len(pts) - 1)]
+
+
+def look_way(arm, tool, q_from, q_to, lift_m: float = LOOK_LIFT_M) -> dict:
+    """The way of the first look from joint pose q_from to q_to (the look pose, or the look pose turned aside
+    for the photo "before"). No motion. The base turns ONLY with the tool lifted:
+
+      lift    where the arm stands: straight up by lift_m, the gripper not turning (straight_lift);
+      turn    the base alone, to the base angle of q_to: no point of the tool changes its height;
+      plane   (only when the arm did not start in the joints of q_to: from a fold) at that height and on that
+              base angle to the place straight above q_to;
+      lower   straight down onto q_to: straight_lift of q_to, backwards.
+
+    So while the base turns, every point of whatever is taped to the gripper is lift_m above where it was when
+    the arm stood still before the lift (tool_rise says so for every sample of the turn; it is asked again of
+    the measured arm when the way is flown: fly_look_way), which is at least lift_m above the table. And where
+    it comes down, it comes down along a vertical line, onto where the look pose has it.
+
+    Where the arm cannot lift straight up from q_from (a gripper that points steeply down has its wrist at the
+    limit: the photo pose of the painting commands, most poses of a capture), it first goes to the look pose on
+    the base angle it STANDS at, without turning the base (plane_move; the tool moves in the vertical plane it
+    is in, as on every way to the look pose before), and lifts, turns and lowers from there.
+    Two poses on one base angle (LOOK_TURN_FREE_DEG) need no turn: plane_move alone.
+
+    -> {"legs": [{"kind": "lift" | "turn" | "plane" | "raise" | "lower", "path": [q, ...]}, ...], "via": text,
+        "turn": bool, "lift_m": lift_m when the base turns, "turn_rise_m": the least any point of a tool has
+        gained at the turn (tool_rise), "min_height_m": the lowest modelled height of the REGISTERED tip}.
+    Raises SafetyError when no such way passes the checks: nothing is flown then (the caller refuses)."""
+    q0, q1 = np.asarray(q_from, dtype=float), np.asarray(q_to, dtype=float)
+    limit = TL.MIN_FREE_HEIGHT + TL.PLAN_MARGIN
+    out = {"legs": [], "via": "the arm is there", "turn": False, "lift_m": None, "turn_rise_m": None}
+    if float(np.max(np.abs(q1 - q0))) <= math.radians(0.3):
+        pass
+    elif abs(float(q1[0] - q0[0])) <= math.radians(LOOK_TURN_FREE_DEG):
+        plan = plane_move(arm, tool, q0, q1)
+        out.update(legs=_plane_legs(plan), via=plan["via"] + " (the base does not turn)")
+    else:
+        down = straight_lift(arm, tool, q1, lift_m)             # (flown backwards: the last leg of either way)
+
+        def turned(up):
+            """The turn at the top of the lift `up`: (its two poses, the least gain of a tool point there)."""
+            a = np.asarray(up[-1], dtype=float)
+            b = a.copy()
+            b[0] = q1[0]
+            TL._segment(arm, tool, a, b, limit, "the turn of the base")
+            gain = min(tool_rise(up[0], a), tool_rise(up[0], b))
+            if gain < float(lift_m) - 0.005:
+                raise SafetyError(f"at the turn a tool would be only {gain * 1000:.0f} mm above where it hung")
+            return [a, b], gain
+
+        try:
+            up = straight_lift(arm, tool, q0, lift_m)
+            turn, gain = turned(up)
+            legs = [{"kind": "lift", "path": up}, {"kind": "turn", "path": turn}]
+            via = f"lifted {float(lift_m) * 100:.0f} cm straight up, the base turned at that height"
+            if float(np.max(np.abs(turn[1] - down[-1]))) > math.radians(0.3):
+                across = plane_move(arm, tool, turn[1], down[-1])
+                legs += _plane_legs(across)
+                via += f", across to the place above the pose ({across['via']})"
+        except SafetyError as e:
+            # the arm cannot lift from where it stands: to the look pose on ITS base angle first, the base not turning
+            mid = q1.copy()
+            mid[0] = q0[0]
+            try:
+                there = plane_move(arm, tool, q0, mid)
+                up = straight_lift(arm, tool, mid, lift_m)
+                turn, gain = turned(up)
+            except SafetyError as e2:
+                raise SafetyError(f"no way of the look turns the base with the tool lifted: {e}; and by the look pose on the "
+                                  f"base angle the arm stands at: {e2}") from e2
+            legs = _plane_legs(there) + [{"kind": "lift", "path": up}, {"kind": "turn", "path": turn}]
+            via = (f"to the look pose on the base angle it stands at ({there['via']}, the base not turning), lifted "
+                   f"{float(lift_m) * 100:.0f} cm straight up, the base turned at that height")
+        legs.append({"kind": "lower", "path": [np.asarray(w, dtype=float) for w in down[::-1]]})
+        out.update(legs=legs, via=via + ", straight down", turn=True, lift_m=float(lift_m), turn_rise_m=round(float(gain), 4))
+    wps = plan_waypoints(out) if out["legs"] else [q0]
+    low = TL.tip_height(arm, wps[0], tool)
+    for a, b in zip(wps[:-1], wps[1:]):
+        n = max(1, int(math.ceil(math.degrees(float(np.max(np.abs(b - a)))) / 1.5)))
+        low = min(low, min(TL.tip_height(arm, a + (b - a) * (k / n), tool) for k in range(1, n + 1)))
+    out["min_height_m"] = round(float(low), 4)
+    return out
+
+
+def fly_look_way(arm, q_to, speed_deg_s: float = LOOK_SPEED_DEG_S, settle=0.5, way: dict | None = None) -> dict:
+    """look_way from the measured pose to q_to, then fly it, leg by leg (each its own Arm.run_path, from the pose
+    the arm really stands in). way: a look_way result planned before; it is planned again when the arm does not
+    stand where it starts (an arm settles when its torque comes on).
+
+    What is asked of the MEASURED arm, not of the plan:
+    - a lift is planned from where the arm stands when the lift begins (straight_lift), and must not sink;
+    - before the base turns, and all the while it turns, every point of a tool of up to SIL_REACH_M is still
+      LOOK_CLEAR_M above where it was when the lift began (tool_rise of the measured poses): else the base does
+      not turn, or stops turning, and the arm holds (MotionAborted);
+    - on every leg the registered tip stays tooling.MIN_FREE_HEIGHT above the table, as in tooling.free_move.
+    SafetyError before anything moves (no way, or the first leg does not pass from the measured pose); a leg
+    that cannot be flown after the arm has moved is a MotionAborted: the arm holds where it stands.
+    -> {"via", "legs": how many were flown, "turned": bool, "rise_at_turn_m": the least gain measured before the
+        turn (None: no turn), "min_tip_height_m": the lowest MEASURED height of the registered tip, "duration_s"}."""
+    tool = arm.tool
+    if tool is None:
+        raise SafetyError("fly_look_way is for an arm with a tool attached")
+    q = arm.read_q()
+    q_to = np.asarray(q_to, dtype=float)
+    if way is not None and way["legs"] and float(np.max(np.abs(np.asarray(way["legs"][0]["path"][0]) - q))) > math.radians(0.5):
+        way = None                                              # (the arm is not where the plan starts: plan again)
+    if way is None:
+        way = look_way(arm, tool, q, q_to)
+    low = {"h": TL.tip_height(arm, q, tool)}
+    out = {"via": way["via"], "legs": 0, "turned": False, "rise_at_turn_m": None, "duration_s": 0.0}
+    ground = None                                               # the measured pose from which the last lift began
+    legs = way["legs"]
+
+    def run(wps, settle_s, monitor, what):
+        try:
+            r = arm.run_path(wps, speed_deg_s, settle=settle_s, monitor=monitor)
+        except MotionAborted as e:
+            if e.info.get("reason") == "monitor":
+                raise MotionAborted(f"{what}; the arm holds where it stopped (the registered tip {low['h'] * 1000:.0f} mm "
+                                    "above the table, measured)",
+                                    info={**e.info, "tool_tip_height_m": round(low["h"], 4)}) from e
+            raise
+        out["duration_s"] = round(out["duration_s"] + float(r["duration_s"]), 3)
+        out["legs"] += 1
+        return r
+
+    for i, leg in enumerate(legs):
+        kind, path = leg["kind"], leg["path"]
+        last = i == len(legs) - 1
+        q_now = arm.read_q()
+        try:
+            if kind == "lift":
+                ground, h0 = q_now, TL.tip_height(arm, q_now, tool)
+                wps = straight_lift(arm, tool, q_now, way["lift_m"])
+
+                def rising(t, q_plan, q_meas, _h0=h0):
+                    h = TL.tip_height(arm, q_meas, tool)
+                    low["h"] = min(low["h"], h)
+                    return h < _h0 - 0.004                     # (it is supposed to go UP)
+
+                run(wps, 1.0, rising, "the lift before the base turns was stopped: the tool sank")
+            elif kind == "turn":
+                gain = None if ground is None else tool_rise(ground, q_now)
+                if gain is None or gain < LOOK_CLEAR_M:
+                    raise MotionAborted("the base was not turned: the arm does not hold the tool lifted (" +
+                                        ("no lift was flown before" if gain is None else
+                                         f"the least a tool point has gained is {gain * 1000:.0f} mm, measured; "
+                                         f"{LOOK_CLEAR_M * 1000:.0f} mm are asked") + "); the arm holds where it stands",
+                                        info={"reason": "not lifted"})
+                TL._segment(arm, tool, q_now, path[-1], TL.MIN_FREE_HEIGHT, "the turn of the base")
+                out["rise_at_turn_m"] = round(float(gain), 4)
+
+                def lifted(t, q_plan, q_meas, _g=ground):
+                    low["h"] = min(low["h"], TL.tip_height(arm, q_meas, tool))
+                    return tool_rise(_g, q_meas) < LOOK_CLEAR_M
+
+                run([q_now, path[-1]], 0.3, lifted, "the base stopped turning: the arm no longer held the tool "
+                                                    f"{LOOK_CLEAR_M * 1000:.0f} mm above where it hung before the lift")
+                out["turned"] = True
+            else:
+                # "plane" / "raise": pieces on one base angle; "lower": straight down, from the top the plan has
+                wps = [q_now] + [np.asarray(w, dtype=float) for w in (path if kind == "lower" else path[1:])]
+                if kind == "lower" and float(np.max(np.abs(wps[1] - q_now))) < math.radians(0.05):
+                    wps = [q_now] + wps[2:]
+                if abs(float(wps[-1][0] - q_now[0])) > math.radians(LOOK_TURN_FREE_DEG):
+                    raise SafetyError("the arm does not stand on the base angle this leg was planned for")
+                for a, b in zip(wps[:-1], wps[1:]):
+                    TL._segment(arm, tool, a, b, None if kind == "raise" else TL.MIN_FREE_HEIGHT, f"the way of the look ({kind})")
+
+                def watch(t, q_plan, q_meas):
+                    h = TL.tip_height(arm, q_meas, tool)
+                    low["h"] = min(low["h"], h)
+                    return kind != "raise" and h < TL.MIN_FREE_HEIGHT
+
+                run(wps, settle if last else 0.3, watch, f"the way of the look ({kind}) was stopped: the registered tip "
+                                                         "came too near the table")
+        except SafetyError as e:
+            if out["legs"]:             # (the arm has moved: this is no refusal "before anything moved")
+                raise MotionAborted(f"the way of the look could not go on from where the arm stands ({e}); the arm holds "
+                                    "there", info={"reason": "replan"}) from e
+            raise
+    out["min_tip_height_m"] = round(float(low["h"]), 4)
+    return out
 
 
 def _reach_mask(cam, centre, radius_m: float, size, pad_px: float, step: int = 4) -> np.ndarray:
@@ -1172,18 +1490,25 @@ def look_aside(arm, tool, cam, q_from, q_look, turns=LOOK_ASIDE_DEG, size=IMAGE_
     Why the look pose turned, and not a fold: the registered length is what the look is about to judge, and a
     fold is planned with it. Simulated with a tool registered as 8 cm along the fingers and really 17 cm: folded
     from the look pose into the tool's rest pose its tip came down to 10 mm above the table, into the pose `fd
-    paint rest` chooses 5 mm UNDER it; turned 60 deg aside and back it stayed 35 mm up. The look pose is the one
-    pose made for a tool of unknown length, and when only the base turns, every point of the tool keeps the
-    height it has there, whatever its length. (Until round 3 the arm kept the joints it STOOD with and only its
-    base was turned; a folded arm, whose gripper is 25 .. 32 cm from the look's line of sight wherever its base
-    points, cannot clear the reach of a 30 cm tool that way.) The way from q_from is tooling.plan_free_move (the
-    registered tool against the keep-outs, every 1.5 deg) and must not dip for a tool of unknown length either
-    (unknown_tool_dip): for an arm that stands at the look pose it is the base turn alone. What a turn does not
-    know: things on the table that stand higher than 2 cm in the arc a much longer tool sweeps (the same is
-    true of the way to the look pose). No motion.
+    paint rest` chooses 5 mm UNDER it. The look pose is the one pose made for a tool of unknown length. (Until
+    round 3 the arm kept the joints it STOOD with and only its base was turned; a folded arm, whose gripper is
+    25 .. 32 cm from the look's line of sight wherever its base points, cannot clear the reach of a 30 cm tool
+    that way.)
 
-    -> {"q", "turn_deg", "pan_deg", "plan" (the way from q_from), "gripper_px", "tip_px", "tip_in_picture"}
-    Raises SafetyError when no turn qualifies (the text says why the last ones failed)."""
+    The way there and the way back are look_way: the base turns only with the tool lifted LOOK_LIFT_M straight
+    up, and the arm comes straight down onto the pose (2026-11-14, evening. Until then the look pose was turned
+    at its own height, the fingertip 12 cm up: every point of the tool kept the height it has there, and for a
+    tool longer than registered that was 12 .. 47 mm above the table, over the water dish and the palette). A
+    turn qualifies only when both ways exist and do not dip for a tool of unknown length (unknown_tool_dip).
+    What the lift does not know: things that stand higher than LOOK_LIFT_M above where the tool hangs, and what
+    lies under the place where the tool comes down beside the table's working area (the look pose turned aside:
+    with the fingertip 12 cm up, as the look pose itself). No motion.
+
+    -> {"q", "turn_deg", "pan_deg", "plan" (the way from q_from, a look_way result), "back" (the way from there
+        to the look pose), "gripper_px", "tip_px", "tip_in_picture"}
+    Raises SafetyError when no turn qualifies (the text says why the last ones failed): "cannot be turned
+    aside" when no turn clears the place of the look, whatever the start; "no safe way" when a turn does and the
+    arm cannot get there and back with the tool lifted from where it stands."""
     q_from, q_look = np.asarray(q_from, dtype=float), np.asarray(q_look, dtype=float)
     lim = arm.q_limits()[K.ARM_JOINTS[0]]
     off = np.asarray(tool.tip_offset, dtype=float)
@@ -1193,7 +1518,7 @@ def look_aside(arm, tool, cam, q_from, q_look, turns=LOOK_ASIDE_DEG, size=IMAGE_
         return cam.project([t[:3, 3], t[:3, 3] + t[:3, :3] @ off])
 
     g0, t0 = seen(q_look)
-    found, why = None, []
+    found, why, no_way = None, [], []
     for turn in turns:
         q = q_look.copy()
         q[0] = float(q_look[0]) + math.radians(float(turn))
@@ -1209,27 +1534,42 @@ def look_aside(arm, tool, cam, q_from, q_look, turns=LOOK_ASIDE_DEG, size=IMAGE_
         if hidden:
             why.append(f"{turn:+g} deg: {hidden}")
             continue
-        try:
-            plan = TL.plan_free_move(arm, tool, q_from, q)
+        try:                                        # the way back first: it does not depend on where the arm stands
+            back = look_way(arm, tool, q, q_look)
         except SafetyError as e:
-            why.append(f"{turn:+g} deg: {str(e)[:120]}")
+            why.append(f"{turn:+g} deg: no way back to the look pose with the tool lifted ({str(e)[:200]})")
+            continue
+        if unknown_tool_dip(arm, tool, plan_waypoints(back)):
+            why.append(f"{turn:+g} deg: the way back would bring a tool of unknown length lower than it is there")
+            continue
+        try:
+            plan = look_way(arm, tool, q_from, q)
+        except SafetyError as e:
+            no_way.append(f"{turn:+g} deg: {str(e)[:260]}")
             continue
         if unknown_tool_dip(arm, tool, plan_waypoints(plan)):
-            why.append(f"{turn:+g} deg: the way would bring a tool of unknown length lower than it is now")
+            no_way.append(f"{turn:+g} deg: the way would bring a tool of unknown length lower than it is now")
             continue
         inside = bool(0.0 <= t[0] <= size[0] - 1.0 and 0.0 <= t[1] <= size[1] - 1.0)
-        got = {"q": q, "turn_deg": float(turn), "pan_deg": round(math.degrees(float(q[0])), 1), "plan": plan,
+        finger = K.fk(q, K.tool_offset(*arm.cfg["tip_offset"]))[:3, 3]
+        got = {"q": q, "turn_deg": float(turn), "pan_deg": round(math.degrees(float(q[0])), 1), "plan": plan, "back": back,
                "gripper_px": [round(float(v), 1) for v in g], "tip_px": [round(float(v), 1) for v in t],
-               "tip_in_picture": inside}
+               "tip_in_picture": inside, "fingertip_xy": [round(float(finger[0]), 3), round(float(finger[1]), 3)]}
         if not inside:
             return got
         found = found or got
     if found is not None:
         return found
+    if no_way:
+        raise SafetyError(f"the arm stands at the look pose, or where the camera could see it or its tool at the place of "
+                          f"the look, and there is no safe way from where it stands to the look pose turned aside: the base "
+                          f"turns only with the tool lifted {LOOK_LIFT_M * 100:.0f} cm straight up (so that a tool of unknown "
+                          f"length passes that far above the table). Last reasons: {' | '.join(no_way[-2:])}")
     raise SafetyError(f"the arm stands at the look pose, or where the camera could see it or its tool at the place of the "
                       f"look, and cannot be turned aside for a photo of the scene without tool '{tool.name}' in it (the look "
                       f"pose turned about the base, with everything a tool of up to {SIL_REACH_M * 100:.0f} cm can reach clear "
-                      f"of that place). Last reasons: {' | '.join(why[-3:])}")
+                      f"of that place, and back to the look pose with the tool lifted {LOOK_LIFT_M * 100:.0f} cm before the "
+                      f"base turns). Last reasons: {' | '.join(why[-3:])}")
 
 
 def look_background(img, cam, q_look, tip_offset, radius_px: float = LOOK_CLEAN_PX, min_px: int = LOOK_CLEAN_MIN_PX,
@@ -1283,6 +1623,8 @@ def unknown_tool_dip(arm, tool, waypoints, step_deg: float = 1.5) -> dict | None
     when every such tip stays within 5 mm of the lower of its two end heights or 2 cm above the table, else
     {"length_m", "direction", "lowest_m", "ends_m"} of the worst one. No motion."""
     wps = [np.asarray(w, dtype=float) for w in waypoints]
+    if len(wps) < 2:                    # (a way of no length: the arm is there)
+        return None
     samples = [wps[0]]
     for a, b in zip(wps[:-1], wps[1:]):
         n = max(1, int(math.ceil(math.degrees(float(np.max(np.abs(b - a)))) / step_deg)))
